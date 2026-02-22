@@ -1,6 +1,6 @@
 import pandas as pd
-from sim.env import ScenarioParams
-from sim.runner import compare_heuristics
+from src.sim.env import ScenarioParams
+from src.sim.runner import compare_heuristics
 
 def main():
     grid = []
