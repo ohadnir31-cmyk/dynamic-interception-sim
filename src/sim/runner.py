@@ -40,14 +40,11 @@ def run_episode(params: ScenarioParams, heuristic_name: str, preempt: bool = Fal
     while not env.done():
         active = env.active_threats()
 
-        # decision point: if no target / target disappeared -> pick
         if target_id is None or all(th.id != target_id for th in active):
             target_id = h(active, env.interceptor_pos, params.v_interceptor)
 
-        # advance one step
         events = env.step(target_id)
 
-        # event-driven preemption: if allowed and a new target arrived -> re-evaluate
         if preempt and events["arrival"] > 0:
             active2 = env.active_threats()
             target_id = h(active2, env.interceptor_pos, params.v_interceptor)
@@ -77,7 +74,6 @@ def run_episode_with_trace(
     while not env.done():
         active_before = env.active_threats()
 
-        # decision point
         if target_id is None or all(th.id != target_id for th in active_before):
             target_id = h(active_before, env.interceptor_pos, params.v_interceptor)
 
@@ -106,7 +102,6 @@ def run_episode_with_trace(
 
         events = env.step(target_id)
 
-        # event-driven preemption
         if preempt and events["arrival"] > 0:
             active_after = env.active_threats()
             target_id = h(active_after, env.interceptor_pos, params.v_interceptor)
@@ -132,8 +127,6 @@ def compare_heuristics(params: ScenarioParams) -> pd.DataFrame:
 
     for name in heuristics:
         rows.append(run_episode(params, name, preempt=False))
-
-        # optional preemption variants
         if name in ("NI", "MPS"):
             rows.append(run_episode(params, name, preempt=True))
 
