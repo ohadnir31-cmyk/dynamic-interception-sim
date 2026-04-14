@@ -175,6 +175,59 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
         ),
     )
 
+    # -------------------------------------------------
+    # 7. NI clearly favorable
+    # -------------------------------------------------
+    scenarios["manual_ni_strong"] = CanonicalScenario(
+        name="manual_ni_strong",
+        description=(
+            "All targets are feasible with similar deadlines. "
+            "Nearest-first strategy should dominate."
+        ),
+        params=ScenarioParams(
+            seed=0,
+            horizon_T=25.0,
+            dt=0.5,
+            lambda_arrival=0.0,
+            v_interceptor=20.0,
+            kill_radius=2.0,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [18.0, 4.0], "vel": [-8.0, 0.0]},
+                {"t": 0.5, "pos": [24.0, -6.0], "vel": [-8.5, 0.0]},
+                {"t": 1.0, "pos": [28.0, 8.0], "vel": [-8.0, 0.0]},
+                {"t": 1.5, "pos": [30.0, -4.0], "vel": [-8.0, 0.0]},
+            ],
+        ),
+    )
+
+    # -------------------------------------------------
+    # 8. TTB clearly favorable
+    # -------------------------------------------------
+    scenarios["manual_ttb_strong"] = CanonicalScenario(
+        name="manual_ttb_strong",
+        description=(
+            "One target has extremely short time-to-boundary but is still feasible. "
+            "Urgency-driven policy should dominate."
+        ),
+        params=ScenarioParams(
+            seed=0,
+            horizon_T=20.0,
+            dt=0.5,
+            lambda_arrival=0.0,
+            v_interceptor=16.0,
+            kill_radius=2.0,
+            home=(0.0, 0.0),
+            manual_threats=[
+                # very urgent but reachable
+                {"t": 0.0, "pos": [8.0, 18.0], "vel": [-12.0, 0.0]},
+                # closer but less urgent
+                {"t": 0.0, "pos": [20.0, 4.0], "vel": [-8.0, 0.0]},
+                # background pressure
+                {"t": 1.0, "pos": [26.0, -10.0], "vel": [-9.0, 0.0]},
+            ],
+        ),
+    )
     return scenarios
 
 
