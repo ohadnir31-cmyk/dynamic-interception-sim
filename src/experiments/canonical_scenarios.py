@@ -16,26 +16,25 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
 
     scenarios["manual_conflict_ni_vs_mps"] = CanonicalScenario(
         name="manual_conflict_ni_vs_mps",
-        description=(
-            "A true conflict between proximity and urgency. "
-            "One threat is closer to the interceptor, while another is more urgent."
-        ),
+        description="Stronger conflict between proximity and urgency with three overlapping targets.",
         params=ScenarioParams(
             seed=0,
-            horizon_T=20.0,
+            horizon_T=25.0,
             dt=0.5,
             lambda_arrival=0.0,
-            v_interceptor=18.0,
+            v_interceptor=14.0,
             kill_radius=2.0,
             home=(0.0, 0.0),
             manual_threats=[
-                {"t": 0.0, "pos": [32.0, 6.0], "vel": [-10.0, 0.0]},
-                {"t": 0.5, "pos": [18.0, 24.0], "vel": [-14.0, 0.0]},
-                {"t": 1.0, "pos": [28.0, -8.0], "vel": [-11.0, 0.0]},
+                # closer to interceptor, less urgent
+                {"t": 0.0, "pos": [26.0, 5.0], "vel": [-8.0, 0.0]},
+                # farther in Euclidean distance but more urgent
+                {"t": 0.0, "pos": [14.0, 20.0], "vel": [-12.0, 0.0]},
+                # another target to keep overlap and force tradeoff
+                {"t": 1.0, "pos": [24.0, -10.0], "vel": [-10.0, 0.0]},
             ],
         ),
     )
-
     scenarios["manual_cluster"] = CanonicalScenario(
         name="manual_cluster",
         description=(
