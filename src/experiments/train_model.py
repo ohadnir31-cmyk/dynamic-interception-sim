@@ -44,13 +44,14 @@ def train_model(df: pd.DataFrame):
     model = Pipeline([
         ("scaler", StandardScaler()),
         ("clf", RandomForestClassifier(
-            n_estimators=200,
-            max_depth=10,
+            n_estimators=300,
+            max_depth=12,
+            class_weight="balanced",
             random_state=42,
             n_jobs=-1,
         )),
     ])
-
+    
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
@@ -65,7 +66,7 @@ def train_model(df: pd.DataFrame):
 
 
 def main():
-    df = load_data("rollout_labeled_dataset_10min_informative_no_ties.csv")
+    df = load_data("rollout_labeled_dataset_strong_heuristics_informative_no_ties.csv")
 
     print("\nDataset shape:", df.shape)
     print("\nClass distribution:")
