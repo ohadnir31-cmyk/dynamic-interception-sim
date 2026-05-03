@@ -112,8 +112,30 @@ def build_rollout_dataset_10min(
 
     global_start = time.time()
 
-    candidate_heuristics = ["NI", "TTB", "MPS", "Weighted", "Cluster"]
-    behavior_heuristics = ["NI", "MPS", "Cluster"]
+    candidate_heuristics = [
+    "NI",
+    "TTB",
+    "MPS",
+    "Weighted",
+    "Cluster",
+    "FNI",
+    "FMTTB",
+    "Ratio",
+    "MaxMargin",
+    "Danger",
+    "DensityUrgent",
+    "OppCost",
+    "Lookahead",
+    ]
+    behavior_heuristics = [
+    "NI",
+    "MPS",
+    "Cluster",
+    "FNI",
+    "Danger",
+    "DensityUrgent",
+    "Lookahead",
+    ]
 
     scenarios: dict[str, Any] = {}
 
@@ -233,8 +255,8 @@ def main() -> None:
     build_rollout_dataset_10min(
         include_canonical=True,
         include_stochastic=True,
-        max_states_per_run=30,
-        output_prefix="rollout_labeled_dataset_10min",
+        max_states_per_run=20,
+        output_prefix="rollout_labeled_dataset_strong_heuristics",
     )
 
 
