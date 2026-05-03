@@ -255,7 +255,7 @@ def main() -> None:
     build_rollout_dataset_10min(
         include_canonical=True,
         include_stochastic=True,
-        max_states_per_run=20,
+        max_states_per_run=10,
         output_prefix="rollout_labeled_dataset_strong_heuristics",
     )
 
