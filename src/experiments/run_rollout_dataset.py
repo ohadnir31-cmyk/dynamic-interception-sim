@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import pandas as pd
 
 from src.sim.env import ScenarioParams
@@ -7,28 +8,35 @@ from src.experiments.canonical_scenarios import get_canonical_scenarios
 from src.experiments.rollout_labeling import generate_dataset_for_scenarios
 
 
-def make_stochastic_scenarios() -> dict:
+def make_stochastic_scenarios_10min() -> dict:
+    """
+    Medium-size stochastic scenario set.
+    Intended for an experiment that is not tiny, but should still be reasonable in Colab.
+    """
+
     scenarios = {}
 
-    seeds = range(20)  # בהמשך אפשר 100+
-    lambdas = [0.25, 0.4, 0.6]
-    x_means = [25.0, 35.0, 45.0]
-    y_sigmas = [15.0, 25.0, 35.0]
-    v_threats = [10.0, 13.0, 16.0]
-    v_interceptors = [14.0, 16.0, 18.0]
+    seeds = range(4)  # 4 seeds
+    lambdas = [0.35, 0.55]
+    x_means = [30.0, 45.0]
+    y_sigmas = [20.0, 35.0]
+    v_threats = [11.0, 15.0]
+    v_interceptors = [14.0, 18.0]
 
     idx = 0
+
     for seed in seeds:
         for lam in lambdas:
             for x_mean in x_means:
                 for y_sigma in y_sigmas:
                     for v_threat in v_threats:
                         for v_interceptor in v_interceptors:
-                            name = f"stoch_{idx:05d}"
+                            name = f"stoch10_{idx:04d}"
+
                             scenarios[name] = type("ScenarioObj", (), {
                                 "params": ScenarioParams(
                                     seed=seed,
-                                    horizon_T=60.0,
+                                    horizon_T=45.0,
                                     dt=0.5,
                                     lambda_arrival=lam,
                                     x_spawn_mean=x_mean,
@@ -42,6 +50,7 @@ def make_stochastic_scenarios() -> dict:
                                     manual_threats=None,
                                 )
                             })()
+
                             idx += 1
 
     return scenarios
@@ -66,12 +75,15 @@ def filter_informative_states(
     return df
 
 
-def build_rollout_dataset(
+def build_rollout_dataset_10min(
     include_canonical: bool = True,
     include_stochastic: bool = True,
-    max_states_per_run: int | None = 50,
-    output_prefix: str = "rollout_labeled_dataset_v2",
+    max_states_per_run: int | None = 20,
+    output_prefix: str = "rollout_labeled_dataset_10min",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+
+    start = time.time()
+
     candidate_heuristics = ["NI", "TTB", "MPS", "Weighted", "Cluster"]
     behavior_heuristics = ["NI", "MPS", "Cluster"]
 
@@ -81,12 +93,14 @@ def build_rollout_dataset(
         scenarios.update(get_canonical_scenarios())
 
     if include_stochastic:
-        scenarios.update(make_stochastic_scenarios())
+        scenarios.update(make_stochastic_scenarios_10min())
 
+    print("=== Rollout Dataset Build ===")
     print(f"Total scenarios: {len(scenarios)}")
     print(f"Behavior heuristics: {behavior_heuristics}")
     print(f"Candidate heuristics: {candidate_heuristics}")
     print(f"Max states per run: {max_states_per_run}")
+    print()
 
     df_rollout = generate_dataset_for_scenarios(
         scenarios=scenarios,
@@ -112,32 +126,43 @@ def build_rollout_dataset(
     df_informative_with_ties.to_csv(f"{output_prefix}_informative_with_ties.csv", index=False)
     df_informative_no_ties.to_csv(f"{output_prefix}_informative_no_ties.csv", index=False)
 
+    elapsed = time.time() - start
+
     print("\n=== Full rollout dataset ===")
     print(df_rollout.shape)
     print(df_rollout["winner"].value_counts())
 
+    print("\n=== Winner sets ===")
+    print(df_rollout["winner_set"].value_counts())
+
     print("\n=== Informative states, with ties ===")
     print(df_informative_with_ties.shape)
-    print(df_informative_with_ties["winner"].value_counts())
+    if not df_informative_with_ties.empty:
+        print(df_informative_with_ties["winner"].value_counts())
 
     print("\n=== Informative states, no ties ===")
     print(df_informative_no_ties.shape)
-    print(df_informative_no_ties["winner"].value_counts())
+    if not df_informative_no_ties.empty:
+        print(df_informative_no_ties["winner"].value_counts())
 
     print("\nSaved files:")
     print(f"- {output_prefix}.csv")
     print(f"- {output_prefix}_informative_with_ties.csv")
     print(f"- {output_prefix}_informative_no_ties.csv")
 
+    print("\n=== Runtime ===")
+    print(f"Elapsed seconds: {elapsed:.2f}")
+    print(f"Elapsed minutes: {elapsed / 60:.2f}")
+
     return df_rollout, df_informative_with_ties, df_informative_no_ties
 
 
 def main() -> None:
-    build_rollout_dataset(
+    build_rollout_dataset_10min(
         include_canonical=True,
         include_stochastic=True,
-        max_states_per_run=50,
-        output_prefix="rollout_labeled_dataset_v2",
+        max_states_per_run=20,
+        output_prefix="rollout_labeled_dataset_10min",
     )
 
 
