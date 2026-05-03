@@ -21,12 +21,12 @@ def make_stochastic_scenarios_10min() -> dict[str, Any]:
 
     scenarios = {}
 
-    seeds = range(4)
-    lambdas = [0.35, 0.55]
-    x_means = [30.0, 45.0]
-    y_sigmas = [20.0, 35.0]
-    v_threats = [11.0, 15.0]
-    v_interceptors = [14.0, 18.0]
+    seeds = range(8)
+    lambdas = [0.25, 0.4, 0.6]
+    x_means = [25.0, 35.0, 45.0]
+    y_sigmas = [15.0, 25.0, 35.0]
+    v_threats = [10.0, 13.0, 16.0]
+    v_interceptors = [14.0, 16.0, 18.0]
 
     idx = 0
 
@@ -233,7 +233,7 @@ def main() -> None:
     build_rollout_dataset_10min(
         include_canonical=True,
         include_stochastic=True,
-        max_states_per_run=20,
+        max_states_per_run=30,
         output_prefix="rollout_labeled_dataset_10min",
     )
 
