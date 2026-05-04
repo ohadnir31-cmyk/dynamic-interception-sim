@@ -66,7 +66,8 @@ def make_complex_stochastic_scenarios() -> dict[str, Any]:
                                     {
                                         "params": ScenarioParams(
                                             seed=seed,
-                                            horizon_T=75.0,
+                                            # horizon_T=75.0,
+                                            horizon_T=55.0,
                                             dt=0.5,
                                             lambda_arrival=lam,
                                             x_spawn_mean=x_mean,
@@ -125,14 +126,15 @@ def build_rollout_dataset_complex(
     ]
 
     # Behavior policies used to generate state distribution
-    behavior_heuristics = [
-        "NI",
-        "MPS",
-        "FNI",
-        "Ratio",
-        "Danger",
-        "Cluster",
-    ]
+    behavior_heuristics = ["NI", "Ratio", "Cluster"]
+    # behavior_heuristics = [
+    #     "NI",
+    #     "MPS",
+    #     "FNI",
+    #     "Ratio",
+    #     "Danger",
+    #     "Cluster",
+    # ]
 
     scenarios: dict[str, Any] = {}
 
@@ -257,7 +259,8 @@ def main() -> None:
     build_rollout_dataset_complex(
         include_canonical=True,
         include_complex_stochastic=True,
-        max_states_per_run=20,
+        max_states_per_run=10,
+        # max_states_per_run=20,
         output_prefix="rollout_dataset_compact_heuristics_complex",
     )
 
