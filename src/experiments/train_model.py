@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from sklearn.model_selection import GroupShuffleSplit, GroupKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -29,22 +29,17 @@ BASE_FEATURE_COLS = [
 ]
 
 DERIVED_FEATURE_COLS = [
-    # ratio / urgency
     "mean_tti_to_mean_ttb_ratio",
     "mean_slack_to_mean_ttb_ratio",
     "negative_slack_fraction",
     "min_ttb_to_mean_ttb_ratio",
     "ttb_spread",
     "ttb_relative_spread",
-
-    # slack / feasibility pressure
     "slack_pressure",
     "min_vs_mean_slack",
     "failure_risk",
     "urgency_index",
     "feasible_fraction",
-
-    # spatial / proximity
     "density_per_target",
     "proximity_signal",
 ]
@@ -64,39 +59,18 @@ def add_group_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add stronger derived features for policy-group prediction.
-
-    These features are intended to separate:
-    - Feasible vs RatioUrgency
-    - Proximity vs Feasible
-    - Spatial vs non-spatial decisions
-    """
-
     df = df.copy()
     eps = 1e-6
 
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # ----------------------------
-    # Existing ratio features
-    # ----------------------------
-
     df["mean_tti_to_mean_ttb_ratio"] = df["mean_tti"] / (df["mean_ttb"] + eps)
     df["mean_slack_to_mean_ttb_ratio"] = df["mean_slack"] / (df["mean_ttb"] + eps)
     df["negative_slack_fraction"] = df["count_negative_slack"] / (df["N_active"] + eps)
 
-    # ----------------------------
-    # Time pressure / urgency spread
-    # ----------------------------
-
     df["min_ttb_to_mean_ttb_ratio"] = df["min_ttb"] / (df["mean_ttb"] + eps)
     df["ttb_spread"] = df["mean_ttb"] - df["min_ttb"]
     df["ttb_relative_spread"] = df["ttb_spread"] / (df["mean_ttb"] + eps)
-
-    # ----------------------------
-    # Slack / feasibility pressure
-    # ----------------------------
 
     df["slack_pressure"] = -df["mean_slack"]
     df["min_vs_mean_slack"] = df["min_positive_slack"] - df["mean_slack"]
@@ -108,20 +82,8 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     df["urgency_index"] = df["negative_slack_fraction"]
     df["feasible_fraction"] = 1.0 - df["negative_slack_fraction"]
 
-    # ----------------------------
-    # Spatial / proximity proxies
-    # ----------------------------
-
-    # Lower cluster_index = denser target group.
-    # Normalize by number of active targets.
     df["density_per_target"] = df["cluster_index"] / (df["N_active"] + eps)
-
-    # Higher proximity signal = targets are closer on average.
     df["proximity_signal"] = 1.0 / (df["mean_tti"] + eps)
-
-    # ----------------------------
-    # Final cleanup
-    # ----------------------------
 
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.fillna(1e6)
@@ -157,6 +119,88 @@ def build_model() -> Pipeline:
 
 
 # ============================================================
+# Top-k utilities
+# ============================================================
+
+def top_k_accuracy(
+    y_true: pd.Series,
+    proba: np.ndarray,
+    classes: np.ndarray,
+    k: int,
+) -> float:
+    top_k_idx = np.argsort(proba, axis=1)[:, -k:]
+    top_k_labels = classes[top_k_idx]
+
+    correct = [
+        true_label in top_k_labels[i]
+        for i, true_label in enumerate(y_true.to_numpy())
+    ]
+
+    return float(np.mean(correct))
+
+
+def prediction_probability_table(
+    df_test: pd.DataFrame,
+    y_true: pd.Series,
+    proba: np.ndarray,
+    classes: np.ndarray,
+    output_path: str = "group_prediction_probabilities.csv",
+) -> pd.DataFrame:
+    prob_df = pd.DataFrame(
+        proba,
+        columns=[f"prob_{c}" for c in classes],
+        index=df_test.index,
+    )
+
+    top_indices = np.argsort(proba, axis=1)[:, ::-1]
+
+    result = df_test.copy()
+    result["true_group"] = y_true.values
+    result["top1_group"] = classes[top_indices[:, 0]]
+    result["top1_prob"] = proba[np.arange(len(proba)), top_indices[:, 0]]
+
+    if len(classes) >= 2:
+        result["top2_group"] = classes[top_indices[:, 1]]
+        result["top2_prob"] = proba[np.arange(len(proba)), top_indices[:, 1]]
+
+    if len(classes) >= 3:
+        result["top3_group"] = classes[top_indices[:, 2]]
+        result["top3_prob"] = proba[np.arange(len(proba)), top_indices[:, 2]]
+
+    result = pd.concat([result, prob_df], axis=1)
+    result.to_csv(output_path, index=False)
+
+    print(f"\nSaved prediction probability table: {output_path}")
+
+    return result
+
+
+def analyze_prediction_confidence(pred_df: pd.DataFrame) -> None:
+    print("\n=== Prediction Confidence Analysis ===")
+
+    print("\nTop-1 probability summary:")
+    print(pred_df["top1_prob"].describe().round(3))
+
+    if "top2_prob" in pred_df.columns:
+        pred_df["top1_top2_gap"] = pred_df["top1_prob"] - pred_df["top2_prob"]
+
+        print("\nTop-1 minus Top-2 probability gap:")
+        print(pred_df["top1_top2_gap"].describe().round(3))
+
+        ambiguous = pred_df[pred_df["top1_top2_gap"] < 0.15]
+        print("\nAmbiguous predictions (top1-top2 gap < 0.15):")
+        print(len(ambiguous), "out of", len(pred_df))
+        print(round(100 * len(ambiguous) / len(pred_df), 2), "%")
+
+    print("\nMost common Top-1 predictions:")
+    print(pred_df["top1_group"].value_counts())
+
+    if "top2_group" in pred_df.columns:
+        print("\nMost common Top-2 predictions:")
+        print(pred_df["top2_group"].value_counts())
+
+
+# ============================================================
 # Scenario-level train/test evaluation
 # ============================================================
 
@@ -179,10 +223,14 @@ def train_test_by_scenario(df: pd.DataFrame):
     X_test = X.iloc[test_idx]
     y_test = y.iloc[test_idx]
 
+    df_test = df.iloc[test_idx].copy()
+
     model = build_model()
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
+    proba = model.predict_proba(X_test)
+    classes = model.named_steps["clf"].classes_
 
     labels = sorted(y.unique())
 
@@ -192,14 +240,33 @@ def train_test_by_scenario(df: pd.DataFrame):
     print("Train scenarios:", df.iloc[train_idx]["scenario"].nunique())
     print("Test scenarios:", df.iloc[test_idx]["scenario"].nunique())
 
-    print("\n=== Classification Report: Group Labels ===")
+    print("\n=== Classification Report: Top-1 Group Prediction ===")
     print(classification_report(y_test, y_pred, labels=labels))
 
     print("\n=== Confusion Matrix ===")
     print("Labels:", labels)
     print(confusion_matrix(y_test, y_pred, labels=labels))
 
-    return model, X_train, X_test, y_train, y_test
+    print("\n=== Top-k Accuracy ===")
+    top1 = accuracy_score(y_test, y_pred)
+    top2 = top_k_accuracy(y_test, proba, classes, k=min(2, len(classes)))
+    top3 = top_k_accuracy(y_test, proba, classes, k=min(3, len(classes)))
+
+    print(f"Top-1 accuracy: {top1:.3f}")
+    print(f"Top-2 accuracy: {top2:.3f}")
+    print(f"Top-3 accuracy: {top3:.3f}")
+
+    pred_df = prediction_probability_table(
+        df_test=df_test,
+        y_true=y_test,
+        proba=proba,
+        classes=classes,
+        output_path="group_prediction_probabilities.csv",
+    )
+
+    analyze_prediction_confidence(pred_df)
+
+    return model, X_train, X_test, y_train, y_test, pred_df
 
 
 # ============================================================
@@ -224,7 +291,7 @@ def cross_validate_by_scenario(df: pd.DataFrame, n_splits: int = 5) -> None:
         n_jobs=-1,
     )
 
-    print("\n=== Scenario-level Cross Validation ===")
+    print("\n=== Scenario-level Cross Validation: Top-1 Accuracy ===")
     print("Scores:", np.round(scores, 3))
     print("Mean accuracy:", round(scores.mean(), 3))
     print("Std:", round(scores.std(), 3))
@@ -270,13 +337,6 @@ def plot_decision_space_2d(
     y_col: str = "cluster_index",
     save_path: str = "decision_space_group_labels.png",
 ) -> None:
-    """
-    2D projection of the labeled state space.
-
-    This is not a full decision boundary.
-    It is a diagnostic visualization.
-    """
-
     labels = sorted(df["winner_group"].unique())
 
     cmap = plt.get_cmap("tab10")
@@ -315,6 +375,32 @@ def plot_decision_space_2d(
 
 
 # ============================================================
+# Probability visualization
+# ============================================================
+
+def plot_topk_summary(
+    pred_df: pd.DataFrame,
+    save_path: str = "topk_probability_summary.png",
+) -> None:
+    if "top2_prob" not in pred_df.columns:
+        return
+
+    df = pred_df.copy()
+    df["top1_top2_gap"] = df["top1_prob"] - df["top2_prob"]
+
+    plt.figure(figsize=(8, 5))
+    plt.hist(df["top1_top2_gap"], bins=30)
+    plt.title("Prediction Ambiguity: Top-1 minus Top-2 Probability")
+    plt.xlabel("Top-1 probability - Top-2 probability")
+    plt.ylabel("Number of states")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.show()
+
+    print(f"\nSaved Top-k probability summary plot: {save_path}")
+
+
+# ============================================================
 # Save enriched dataset
 # ============================================================
 
@@ -347,16 +433,12 @@ def main() -> None:
     print("\n=== Group label distribution (%) ===")
     print((df["winner_group"].value_counts(normalize=True) * 100).round(2))
 
-    print("\n=== Feature columns used ===")
-    for col in FEATURE_COLS:
-        print("-", col)
-
     save_enriched_dataset(
         df,
         output_path="rollout_dataset_grouped_with_features.csv",
     )
 
-    model, X_train, X_test, y_train, y_test = train_test_by_scenario(df)
+    model, X_train, X_test, y_train, y_test, pred_df = train_test_by_scenario(df)
 
     cross_validate_by_scenario(df, n_splits=5)
 
@@ -370,6 +452,11 @@ def main() -> None:
         x_col="mean_tti_to_mean_ttb_ratio",
         y_col="cluster_index",
         save_path="decision_space_group_labels.png",
+    )
+
+    plot_topk_summary(
+        pred_df,
+        save_path="topk_probability_summary.png",
     )
 
 
