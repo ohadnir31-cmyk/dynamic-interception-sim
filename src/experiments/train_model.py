@@ -48,52 +48,49 @@ FEATURE_COLS = BASE_FEATURE_COLS + DERIVED_FEATURE_COLS
 # ============================================================
 
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add stronger derived features for policy-group prediction.
-
-    These features are designed to capture:
-    - reachability vs urgency
-    - slack pressure
-    - feasibility structure
-    - spatial density
-    """
-
     df = df.copy()
     eps = 1e-6
 
-    # Replace inf before feature construction where needed
-    df = df.replace([np.inf, -np.inf], np.nan)
-
-    # Basic ratio features
+    # ===== Existing =====
     df["mean_tti_to_mean_ttb_ratio"] = df["mean_tti"] / (df["mean_ttb"] + eps)
     df["mean_slack_to_mean_ttb_ratio"] = df["mean_slack"] / (df["mean_ttb"] + eps)
     df["negative_slack_fraction"] = df["count_negative_slack"] / (df["N_active"] + eps)
 
-    # Urgency spread
     df["min_ttb_to_mean_ttb_ratio"] = df["min_ttb"] / (df["mean_ttb"] + eps)
     df["ttb_spread"] = df["mean_ttb"] - df["min_ttb"]
 
-    # Slack pressure:
-    # Higher means many targets are already close to infeasible / negative.
     df["slack_pressure"] = -df["mean_slack"]
-
-    # Same idea as negative_slack_fraction, kept with clearer semantic name
     df["urgency_index"] = df["negative_slack_fraction"]
 
-    # Spatial density proxy:
-    # Lower cluster_index means denser targets.
-    # This feature normalizes by number of active targets.
     df["density_per_target"] = df["cluster_index"] / (df["N_active"] + eps)
-
-    # Feasibility fraction
     df["feasible_fraction"] = 1.0 - df["negative_slack_fraction"]
 
-    # Clean all problematic values after construction
+    # ===== NEW (חשובים מאוד) =====
+
+    # כמה "דחוף" המקרה הקשה ביותר
+    df["hardest_ratio"] = df["min_ttb"] / (df["mean_ttb"] + eps)
+
+    # שונות בזמן עד גבול (קריטי להבחנה בין Cluster vs אחרים)
+    df["ttb_relative_spread"] = df["ttb_spread"] / (df["mean_ttb"] + eps)
+
+    # האם יש outlier מסוכן
+    df["min_vs_mean_slack"] = df["min_positive_slack"] - df["mean_slack"]
+
+    # האם יש "מטרה דומיננטית"
+    df["dominant_target"] = df["min_ttb"] / (df["mean_ttb"] + eps)
+
+    # מדד “כמה קרובים למצב כישלון”
+    df["failure_risk"] = (
+        df["count_negative_slack"] + 1
+    ) / (df["N_active"] + 1)
+
+    # אינדיקציה למצב "קרוב מאוד"
+    df["proximity_signal"] = 1.0 / (df["mean_tti"] + eps)
+
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.fillna(1e6)
 
     return df
-
 
 def add_group_labels(df: pd.DataFrame) -> pd.DataFrame:
     """
