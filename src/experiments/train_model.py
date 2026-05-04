@@ -265,46 +265,33 @@ def plot_decision_space_2d(
     y_col: str = "cluster_index",
     save_path: str = "decision_space_group_labels.png",
 ) -> None:
-    """
-    2D projection of the labeled state space.
-
-    This is not a full decision boundary.
-    It is a visual diagnostic to inspect separability.
-    """
+    import matplotlib.pyplot as plt
+    import numpy as np
 
     labels = sorted(df["winner_group"].unique())
-    label_to_id = {label: i for i, label in enumerate(labels)}
 
-    x = df[x_col]
-    y = df[y_col]
-    c = df["winner_group"].map(label_to_id)
+    # צבע קבוע לכל קבוצה
+    cmap = plt.get_cmap("tab10")
+    label_to_color = {label: cmap(i) for i, label in enumerate(labels)}
 
     plt.figure(figsize=(9, 7))
-    plt.scatter(x, y, c=c, s=10, alpha=0.45)
+
+    for label in labels:
+        subset = df[df["winner_group"] == label]
+        plt.scatter(
+            subset[x_col],
+            subset[y_col],
+            s=12,
+            alpha=0.5,
+            label=label,
+            color=label_to_color[label],
+        )
+
     plt.xlabel(x_col)
     plt.ylabel(y_col)
     plt.title("2D Projection of Policy Group Labels")
 
-    handles = []
-    for label in labels:
-        handles.append(
-            plt.Line2D(
-                [],
-                [],
-                marker="o",
-                linestyle="",
-                label=label,
-                markersize=6,
-            )
-        )
-
-    plt.legend(
-        handles=handles,
-        title="Policy group",
-        bbox_to_anchor=(1.05, 1),
-        loc="upper left",
-    )
-
+    plt.legend(title="Policy group")
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.show()
