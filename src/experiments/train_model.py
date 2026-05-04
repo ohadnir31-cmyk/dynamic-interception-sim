@@ -29,15 +29,24 @@ BASE_FEATURE_COLS = [
 ]
 
 DERIVED_FEATURE_COLS = [
+    # ratio / urgency
     "mean_tti_to_mean_ttb_ratio",
     "mean_slack_to_mean_ttb_ratio",
     "negative_slack_fraction",
     "min_ttb_to_mean_ttb_ratio",
     "ttb_spread",
+    "ttb_relative_spread",
+
+    # slack / feasibility pressure
     "slack_pressure",
+    "min_vs_mean_slack",
+    "failure_risk",
     "urgency_index",
-    "density_per_target",
     "feasible_fraction",
+
+    # spatial / proximity
+    "density_per_target",
+    "proximity_signal",
 ]
 
 FEATURE_COLS = BASE_FEATURE_COLS + DERIVED_FEATURE_COLS
@@ -47,61 +56,75 @@ FEATURE_COLS = BASE_FEATURE_COLS + DERIVED_FEATURE_COLS
 # Data loading and feature engineering
 # ============================================================
 
+def add_group_labels(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["winner_group"] = df["winner"].map(HEURISTIC_TO_GROUP)
+    df = df.dropna(subset=["winner_group"]).copy()
+    return df
+
+
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add stronger derived features for policy-group prediction.
+
+    These features are intended to separate:
+    - Feasible vs RatioUrgency
+    - Proximity vs Feasible
+    - Spatial vs non-spatial decisions
+    """
+
     df = df.copy()
     eps = 1e-6
 
-    # ===== Existing =====
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    # ----------------------------
+    # Existing ratio features
+    # ----------------------------
+
     df["mean_tti_to_mean_ttb_ratio"] = df["mean_tti"] / (df["mean_ttb"] + eps)
     df["mean_slack_to_mean_ttb_ratio"] = df["mean_slack"] / (df["mean_ttb"] + eps)
     df["negative_slack_fraction"] = df["count_negative_slack"] / (df["N_active"] + eps)
 
+    # ----------------------------
+    # Time pressure / urgency spread
+    # ----------------------------
+
     df["min_ttb_to_mean_ttb_ratio"] = df["min_ttb"] / (df["mean_ttb"] + eps)
     df["ttb_spread"] = df["mean_ttb"] - df["min_ttb"]
-
-    df["slack_pressure"] = -df["mean_slack"]
-    df["urgency_index"] = df["negative_slack_fraction"]
-
-    df["density_per_target"] = df["cluster_index"] / (df["N_active"] + eps)
-    df["feasible_fraction"] = 1.0 - df["negative_slack_fraction"]
-
-    # ===== NEW (חשובים מאוד) =====
-
-    # כמה "דחוף" המקרה הקשה ביותר
-    df["hardest_ratio"] = df["min_ttb"] / (df["mean_ttb"] + eps)
-
-    # שונות בזמן עד גבול (קריטי להבחנה בין Cluster vs אחרים)
     df["ttb_relative_spread"] = df["ttb_spread"] / (df["mean_ttb"] + eps)
 
-    # האם יש outlier מסוכן
+    # ----------------------------
+    # Slack / feasibility pressure
+    # ----------------------------
+
+    df["slack_pressure"] = -df["mean_slack"]
     df["min_vs_mean_slack"] = df["min_positive_slack"] - df["mean_slack"]
 
-    # האם יש "מטרה דומיננטית"
-    df["dominant_target"] = df["min_ttb"] / (df["mean_ttb"] + eps)
-
-    # מדד “כמה קרובים למצב כישלון”
     df["failure_risk"] = (
-        df["count_negative_slack"] + 1
-    ) / (df["N_active"] + 1)
+        df["count_negative_slack"] + 1.0
+    ) / (df["N_active"] + 1.0)
 
-    # אינדיקציה למצב "קרוב מאוד"
+    df["urgency_index"] = df["negative_slack_fraction"]
+    df["feasible_fraction"] = 1.0 - df["negative_slack_fraction"]
+
+    # ----------------------------
+    # Spatial / proximity proxies
+    # ----------------------------
+
+    # Lower cluster_index = denser target group.
+    # Normalize by number of active targets.
+    df["density_per_target"] = df["cluster_index"] / (df["N_active"] + eps)
+
+    # Higher proximity signal = targets are closer on average.
     df["proximity_signal"] = 1.0 / (df["mean_tti"] + eps)
+
+    # ----------------------------
+    # Final cleanup
+    # ----------------------------
 
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.fillna(1e6)
-
-    return df
-
-def add_group_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Map heuristic-level labels into broader policy groups.
-    """
-
-    df = df.copy()
-    df["winner_group"] = df["winner"].map(HEURISTIC_TO_GROUP)
-
-    # Drop rows whose winner is not part of the grouped experiment
-    df = df.dropna(subset=["winner_group"]).copy()
 
     return df
 
@@ -112,7 +135,6 @@ def load_data(
     df = pd.read_csv(path)
     df = add_group_labels(df)
     df = add_derived_features(df)
-
     return df
 
 
@@ -121,13 +143,6 @@ def load_data(
 # ============================================================
 
 def build_model() -> Pipeline:
-    """
-    Random Forest baseline.
-
-    We use class_weight='balanced' because even after grouping,
-    the class distribution may remain imbalanced.
-    """
-
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", RandomForestClassifier(
@@ -146,13 +161,6 @@ def build_model() -> Pipeline:
 # ============================================================
 
 def train_test_by_scenario(df: pd.DataFrame):
-    """
-    Train/test split by scenario.
-
-    This is critical:
-    regular random split leaks scenario-specific patterns into both train and test.
-    """
-
     X = df[FEATURE_COLS]
     y = df["winner_group"]
     groups = df["scenario"]
@@ -238,7 +246,7 @@ def plot_feature_importance(
         "importance": importances,
     }).sort_values("importance", ascending=True)
 
-    plt.figure(figsize=(9, 7))
+    plt.figure(figsize=(10, 8))
     plt.barh(imp["feature"], imp["importance"])
     plt.title("Feature Importance — Policy Group Classifier")
     plt.xlabel("Importance")
@@ -262,24 +270,31 @@ def plot_decision_space_2d(
     y_col: str = "cluster_index",
     save_path: str = "decision_space_group_labels.png",
 ) -> None:
-    import matplotlib.pyplot as plt
-    import numpy as np
+    """
+    2D projection of the labeled state space.
+
+    This is not a full decision boundary.
+    It is a diagnostic visualization.
+    """
 
     labels = sorted(df["winner_group"].unique())
 
-    # צבע קבוע לכל קבוצה
     cmap = plt.get_cmap("tab10")
-    label_to_color = {label: cmap(i) for i, label in enumerate(labels)}
+    label_to_color = {
+        label: cmap(i)
+        for i, label in enumerate(labels)
+    }
 
     plt.figure(figsize=(9, 7))
 
     for label in labels:
         subset = df[df["winner_group"] == label]
+
         plt.scatter(
             subset[x_col],
             subset[y_col],
             s=12,
-            alpha=0.5,
+            alpha=0.55,
             label=label,
             color=label_to_color[label],
         )
@@ -287,8 +302,11 @@ def plot_decision_space_2d(
     plt.xlabel(x_col)
     plt.ylabel(y_col)
     plt.title("2D Projection of Policy Group Labels")
-
-    plt.legend(title="Policy group")
+    plt.legend(
+        title="Policy group",
+        bbox_to_anchor=(1.05, 1),
+        loc="upper left",
+    )
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.show()
@@ -328,6 +346,10 @@ def main() -> None:
 
     print("\n=== Group label distribution (%) ===")
     print((df["winner_group"].value_counts(normalize=True) * 100).round(2))
+
+    print("\n=== Feature columns used ===")
+    for col in FEATURE_COLS:
+        print("-", col)
 
     save_enriched_dataset(
         df,
