@@ -112,29 +112,53 @@ def build_rollout_dataset_10min(
 
     global_start = time.time()
 
+    # candidate_heuristics = [
+    # "NI",
+    # "TTB",
+    # "MPS",
+    # "Weighted",
+    # "Cluster",
+    # "FNI",
+    # "FMTTB",
+    # "Ratio",
+    # "MaxMargin",
+    # "Danger",
+    # "DensityUrgent",
+    # "OppCost",
+    # "Lookahead",
+    # ]
+
     candidate_heuristics = [
     "NI",
-    "TTB",
     "MPS",
-    "Weighted",
-    "Cluster",
     "FNI",
     "FMTTB",
     "Ratio",
-    "MaxMargin",
     "Danger",
-    "DensityUrgent",
-    "OppCost",
     "Lookahead",
+    "Cluster",
+    "Weighted",
     ]
+
+    
+    # behavior_heuristics = [
+    # "NI",
+    # "MPS",
+    # "Cluster",
+    # "FNI",
+    # "Danger",
+    # "DensityUrgent",
+    # "Lookahead",
+    # ]
+
     behavior_heuristics = [
     "NI",
     "MPS",
-    "Cluster",
     "FNI",
+    "Ratio",
     "Danger",
-    "DensityUrgent",
     "Lookahead",
+    "Cluster",
     ]
 
     scenarios: dict[str, Any] = {}
