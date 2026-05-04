@@ -11,22 +11,36 @@ from src.experiments.canonical_scenarios import get_canonical_scenarios
 from src.experiments.rollout_labeling import generate_dataset_for_scenarios
 
 
-def make_stochastic_scenarios_10min() -> dict[str, Any]:
+def make_complex_stochastic_scenarios() -> dict[str, Any]:
     """
-    Medium-size stochastic scenario set.
+    More complex scenario generator.
 
-    Intended to generate a meaningful rollout-labeled dataset
-    without exploding runtime in Colab.
+    Goal:
+    - more active targets
+    - harder decisions
+    - fewer trivial ties
+    - clearer differences between heuristics
     """
 
     scenarios = {}
 
-    seeds = range(8)
-    lambdas = [0.25, 0.4, 0.6]
-    x_means = [25.0, 35.0, 45.0]
-    y_sigmas = [15.0, 25.0, 35.0]
-    v_threats = [10.0, 13.0, 16.0]
-    v_interceptors = [14.0, 16.0, 18.0]
+    seeds = range(6)
+
+    # Higher arrival rates -> more simultaneous targets
+    lambdas = [0.7, 0.9, 1.1]
+
+    # Targets spawn farther from boundary, giving time for interactions
+    x_means = [35.0, 50.0, 65.0]
+
+    # Wider spatial spread
+    y_sigmas = [25.0, 40.0, 60.0]
+
+    # More speed diversity
+    v_threats = [10.0, 14.0, 18.0]
+    v_stds = [2.0, 4.0]
+
+    # Interceptor sometimes slower / comparable / faster
+    v_interceptors = [14.0, 18.0, 22.0]
 
     idx = 0
 
@@ -35,32 +49,33 @@ def make_stochastic_scenarios_10min() -> dict[str, Any]:
             for x_mean in x_means:
                 for y_sigma in y_sigmas:
                     for v_threat in v_threats:
-                        for v_interceptor in v_interceptors:
-                            name = f"stoch10_{idx:04d}"
+                        for v_std in v_stds:
+                            for v_interceptor in v_interceptors:
+                                name = f"complex_{idx:05d}"
 
-                            scenarios[name] = type(
-                                "ScenarioObj",
-                                (),
-                                {
-                                    "params": ScenarioParams(
-                                        seed=seed,
-                                        horizon_T=45.0,
-                                        dt=0.5,
-                                        lambda_arrival=lam,
-                                        x_spawn_mean=x_mean,
-                                        x_spawn_std=8.0,
-                                        y_spawn_sigma=y_sigma,
-                                        v_threat_mean=v_threat,
-                                        v_threat_std=2.0,
-                                        v_interceptor=v_interceptor,
-                                        kill_radius=2.0,
-                                        home=(0.0, 0.0),
-                                        manual_threats=None,
-                                    )
-                                },
-                            )()
+                                scenarios[name] = type(
+                                    "ScenarioObj",
+                                    (),
+                                    {
+                                        "params": ScenarioParams(
+                                            seed=seed,
+                                            horizon_T=75.0,
+                                            dt=0.5,
+                                            lambda_arrival=lam,
+                                            x_spawn_mean=x_mean,
+                                            x_spawn_std=12.0,
+                                            y_spawn_sigma=y_sigma,
+                                            v_threat_mean=v_threat,
+                                            v_threat_std=v_std,
+                                            v_interceptor=v_interceptor,
+                                            kill_radius=2.0,
+                                            home=(0.0, 0.0),
+                                            manual_threats=None,
+                                        )
+                                    },
+                                )()
 
-                            idx += 1
+                                idx += 1
 
     return scenarios
 
@@ -70,15 +85,6 @@ def filter_informative_states(
     candidate_heuristics: list[str],
     keep_ties: bool = True,
 ) -> pd.DataFrame:
-    """
-    Keep states that are actually useful for learning.
-
-    Conditions:
-    1. At least two active targets.
-    2. Not all candidate heuristics are tied.
-    3. Optionally remove all remaining ties.
-    """
-
     if df_rollout.empty:
         return df_rollout.copy()
 
@@ -93,72 +99,32 @@ def filter_informative_states(
     return df
 
 
-def build_rollout_dataset_10min(
+def build_rollout_dataset_complex(
     include_canonical: bool = True,
-    include_stochastic: bool = True,
+    include_complex_stochastic: bool = True,
     max_states_per_run: int | None = 20,
-    output_prefix: str = "rollout_labeled_dataset_10min",
+    output_prefix: str = "rollout_dataset_compact_heuristics_complex",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Build rollout-labeled dataset.
-
-    The process:
-    1. Generate scenarios.
-    2. For each scenario and behavior heuristic, sample states.
-    3. For each sampled state, rollout each candidate heuristic.
-    4. Label the state according to the best rollout result.
-    5. Save full and filtered datasets.
-    """
-
     global_start = time.time()
 
-    # candidate_heuristics = [
-    # "NI",
-    # "TTB",
-    # "MPS",
-    # "Weighted",
-    # "Cluster",
-    # "FNI",
-    # "FMTTB",
-    # "Ratio",
-    # "MaxMargin",
-    # "Danger",
-    # "DensityUrgent",
-    # "OppCost",
-    # "Lookahead",
-    # ]
-
+    # Compact, qualitatively distinct heuristic set
     candidate_heuristics = [
-    "NI",
-    "MPS",
-    "FNI",
-    "FMTTB",
-    "Ratio",
-    "Danger",
-    "Lookahead",
-    "Cluster",
-    "Weighted",
+        "NI",
+        "MPS",
+        "FNI",
+        "Ratio",
+        "Danger",
+        "Cluster",
     ]
 
-    
-    # behavior_heuristics = [
-    # "NI",
-    # "MPS",
-    # "Cluster",
-    # "FNI",
-    # "Danger",
-    # "DensityUrgent",
-    # "Lookahead",
-    # ]
-
+    # Behavior policies used to generate state distribution
     behavior_heuristics = [
-    "NI",
-    "MPS",
-    "FNI",
-    "Ratio",
-    "Danger",
-    "Lookahead",
-    "Cluster",
+        "NI",
+        "MPS",
+        "FNI",
+        "Ratio",
+        "Danger",
+        "Cluster",
     ]
 
     scenarios: dict[str, Any] = {}
@@ -166,24 +132,23 @@ def build_rollout_dataset_10min(
     if include_canonical:
         scenarios.update(get_canonical_scenarios())
 
-    if include_stochastic:
-        scenarios.update(make_stochastic_scenarios_10min())
+    if include_complex_stochastic:
+        scenarios.update(make_complex_stochastic_scenarios())
 
     scenario_items = list(scenarios.items())
     total_scenarios = len(scenario_items)
 
-    print("\n=== Rollout Dataset Build ===")
+    print("\n=== Rollout Dataset Build: Compact Heuristics + Complex Scenarios ===")
     print(f"Total scenarios: {total_scenarios}")
     print(f"Canonical scenarios: {include_canonical}")
-    print(f"Stochastic scenarios: {include_stochastic}")
-    print(f"Behavior heuristics: {behavior_heuristics}")
+    print(f"Complex stochastic scenarios: {include_complex_stochastic}")
     print(f"Candidate heuristics: {candidate_heuristics}")
+    print(f"Behavior heuristics: {behavior_heuristics}")
     print(f"Max states per run: {max_states_per_run}")
     print(f"Output prefix: {output_prefix}")
     print()
 
     all_parts: list[pd.DataFrame] = []
-
     loop_start = time.time()
 
     for i, (scenario_name, scenario_obj) in enumerate(
@@ -204,7 +169,7 @@ def build_rollout_dataset_10min(
         avg_per_scenario = elapsed / i
         remaining = avg_per_scenario * (total_scenarios - i)
 
-        if i == 1 or i % 10 == 0 or i == total_scenarios:
+        if i == 1 or i % 25 == 0 or i == total_scenarios:
             rows_so_far = sum(len(part) for part in all_parts)
 
             print(
@@ -214,6 +179,11 @@ def build_rollout_dataset_10min(
                 f"ETA: {remaining / 60:.2f} min | "
                 f"Avg/scenario: {avg_per_scenario:.2f} sec"
             )
+
+            # checkpoint
+            temp_df = pd.concat(all_parts, ignore_index=True)
+            temp_df.to_csv(f"{output_prefix}_checkpoint.csv", index=False)
+            print(f"Checkpoint saved: {output_prefix}_checkpoint.csv")
 
     if all_parts:
         df_rollout = pd.concat(all_parts, ignore_index=True)
@@ -271,16 +241,17 @@ def build_rollout_dataset_10min(
     print(f"- {full_path}")
     print(f"- {informative_ties_path}")
     print(f"- {informative_no_ties_path}")
+    print(f"- {output_prefix}_checkpoint.csv")
 
     return df_rollout, df_informative_with_ties, df_informative_no_ties
 
 
 def main() -> None:
-    build_rollout_dataset_10min(
+    build_rollout_dataset_complex(
         include_canonical=True,
-        include_stochastic=True,
-        max_states_per_run=10,
-        output_prefix="rollout_labeled_dataset_strong_heuristics",
+        include_complex_stochastic=True,
+        max_states_per_run=20,
+        output_prefix="rollout_dataset_compact_heuristics_complex",
     )
 
 
