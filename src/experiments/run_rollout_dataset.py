@@ -24,23 +24,30 @@ def make_complex_stochastic_scenarios() -> dict[str, Any]:
 
     scenarios = {}
 
-    seeds = range(6)
+    # seeds = range(6)
+    seeds = range(3)
 
     # Higher arrival rates -> more simultaneous targets
-    lambdas = [0.7, 0.9, 1.1]
+    # lambdas = [0.7, 0.9, 1.1]
+    lambdas = [0.7, 1.0]
 
     # Targets spawn farther from boundary, giving time for interactions
-    x_means = [35.0, 50.0, 65.0]
+    # x_means = [35.0, 50.0, 65.0]
+    x_means = [40.0, 60.0]
 
     # Wider spatial spread
-    y_sigmas = [25.0, 40.0, 60.0]
+    # y_sigmas = [25.0, 40.0, 60.0]
+    y_sigmas = [30.0, 50.0]
 
     # More speed diversity
-    v_threats = [10.0, 14.0, 18.0]
-    v_stds = [2.0, 4.0]
+    # v_threats = [10.0, 14.0, 18.0]
+    # v_stds = [2.0, 4.0]
+    v_threats = [12.0, 17.0]
+    v_stds = [3.0]
 
     # Interceptor sometimes slower / comparable / faster
-    v_interceptors = [14.0, 18.0, 22.0]
+    # v_interceptors = [14.0, 18.0, 22.0]
+    v_interceptors = [16.0, 22.0]
 
     idx = 0
 
