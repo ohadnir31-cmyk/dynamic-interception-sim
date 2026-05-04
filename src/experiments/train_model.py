@@ -34,12 +34,18 @@ def train_model(df: pd.DataFrame):
     X = df[FEATURE_COLS]
     y = df["winner"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
-    )
+    from sklearn.model_selection import GroupShuffleSplit
+
+    groups = df["scenario"]
+    
+    gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
+    train_idx, test_idx = next(gss.split(df, groups=groups))
+    
+    X_train = df.iloc[train_idx][FEATURE_COLS]
+    y_train = df.iloc[train_idx]["winner"]
+    
+    X_test = df.iloc[test_idx][FEATURE_COLS]
+    y_test = df.iloc[test_idx]["winner"]
 
     model = Pipeline([
         ("scaler", StandardScaler()),
