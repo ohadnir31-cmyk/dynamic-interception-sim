@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 HEURISTIC_TO_GROUP = {
-    # Feasibility
+    # Feasibility-oriented policies
     "MPS": "Feasible",
     "FNI": "Feasible",
     "FMTTB": "Feasible",
 
-    # Ratio / urgency
-    "Ratio": "Ratio",
-    "Danger": "Ratio",
-    "Lookahead": "Ratio",
+    # Ratio / urgency / composite urgency policies
+    "Ratio": "RatioUrgency",
+    "Danger": "RatioUrgency",
+    "Lookahead": "RatioUrgency",
 
-    # Spatial
+    # Spatial policy
     "Cluster": "Spatial",
 
-    # Proximity / weighted
+    # Proximity / weighted policies
     "NI": "Proximity",
     "Weighted": "Proximity",
 }
