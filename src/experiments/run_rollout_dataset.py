@@ -11,42 +11,16 @@ from src.experiments.canonical_scenarios import get_canonical_scenarios
 from src.experiments.rollout_labeling import generate_dataset_for_scenarios
 
 
-def make_complex_stochastic_scenarios() -> dict[str, Any]:
-    """
-    More complex scenario generator.
-
-    Goal:
-    - more active targets
-    - harder decisions
-    - fewer trivial ties
-    - clearer differences between heuristics
-    """
-
+def make_balanced_complex_scenarios() -> dict[str, Any]:
     scenarios = {}
 
-    # seeds = range(6)
-    seeds = range(3)
+    seeds = range(5)
 
-    # Higher arrival rates -> more simultaneous targets
-    # lambdas = [0.7, 0.9, 1.1]
-    lambdas = [0.7, 1.0]
-
-    # Targets spawn farther from boundary, giving time for interactions
-    # x_means = [35.0, 50.0, 65.0]
+    lambdas = [0.7, 1.0, 1.3]
     x_means = [40.0, 60.0]
-
-    # Wider spatial spread
-    # y_sigmas = [25.0, 40.0, 60.0]
-    y_sigmas = [30.0, 50.0]
-
-    # More speed diversity
-    # v_threats = [10.0, 14.0, 18.0]
-    # v_stds = [2.0, 4.0]
+    y_sigmas = [8.0, 25.0, 50.0]  # 8.0 creates cluster-heavy cases
     v_threats = [12.0, 17.0]
     v_stds = [3.0]
-
-    # Interceptor sometimes slower / comparable / faster
-    # v_interceptors = [14.0, 18.0, 22.0]
     v_interceptors = [16.0, 22.0]
 
     idx = 0
@@ -58,7 +32,7 @@ def make_complex_stochastic_scenarios() -> dict[str, Any]:
                     for v_threat in v_threats:
                         for v_std in v_stds:
                             for v_interceptor in v_interceptors:
-                                name = f"complex_{idx:05d}"
+                                name = f"balanced_complex_{idx:05d}"
 
                                 scenarios[name] = type(
                                     "ScenarioObj",
@@ -66,8 +40,7 @@ def make_complex_stochastic_scenarios() -> dict[str, Any]:
                                     {
                                         "params": ScenarioParams(
                                             seed=seed,
-                                            # horizon_T=75.0,
-                                            horizon_T=55.0,
+                                            horizon_T=50.0,
                                             dt=0.5,
                                             lambda_arrival=lam,
                                             x_spawn_mean=x_mean,
@@ -107,15 +80,14 @@ def filter_informative_states(
     return df
 
 
-def build_rollout_dataset_complex(
+def build_rollout_dataset(
     include_canonical: bool = True,
     include_complex_stochastic: bool = True,
-    max_states_per_run: int | None = 20,
-    output_prefix: str = "rollout_dataset_compact_heuristics_complex",
+    max_states_per_run: int | None = 12,
+    output_prefix: str = "rollout_dataset_balanced_complex",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     global_start = time.time()
 
-    # Compact, qualitatively distinct heuristic set
     candidate_heuristics = [
         "NI",
         "MPS",
@@ -125,16 +97,11 @@ def build_rollout_dataset_complex(
         "Cluster",
     ]
 
-    # Behavior policies used to generate state distribution
-    behavior_heuristics = ["NI", "Ratio", "Cluster"]
-    # behavior_heuristics = [
-    #     "NI",
-    #     "MPS",
-    #     "FNI",
-    #     "Ratio",
-    #     "Danger",
-    #     "Cluster",
-    # ]
+    behavior_heuristics = [
+        "NI",
+        "Ratio",
+        "Cluster",
+    ]
 
     scenarios: dict[str, Any] = {}
 
@@ -142,12 +109,12 @@ def build_rollout_dataset_complex(
         scenarios.update(get_canonical_scenarios())
 
     if include_complex_stochastic:
-        scenarios.update(make_complex_stochastic_scenarios())
+        scenarios.update(make_balanced_complex_scenarios())
 
     scenario_items = list(scenarios.items())
     total_scenarios = len(scenario_items)
 
-    print("\n=== Rollout Dataset Build: Compact Heuristics + Complex Scenarios ===")
+    print("\n=== Rollout Dataset Build: Balanced Complex ===")
     print(f"Total scenarios: {total_scenarios}")
     print(f"Canonical scenarios: {include_canonical}")
     print(f"Complex stochastic scenarios: {include_complex_stochastic}")
@@ -178,7 +145,7 @@ def build_rollout_dataset_complex(
         avg_per_scenario = elapsed / i
         remaining = avg_per_scenario * (total_scenarios - i)
 
-        if i == 1 or i % 25 == 0 or i == total_scenarios:
+        if i == 1 or i % 10 == 0 or i == total_scenarios:
             rows_so_far = sum(len(part) for part in all_parts)
 
             print(
@@ -189,15 +156,11 @@ def build_rollout_dataset_complex(
                 f"Avg/scenario: {avg_per_scenario:.2f} sec"
             )
 
-            # checkpoint
             temp_df = pd.concat(all_parts, ignore_index=True)
             temp_df.to_csv(f"{output_prefix}_checkpoint.csv", index=False)
             print(f"Checkpoint saved: {output_prefix}_checkpoint.csv")
 
-    if all_parts:
-        df_rollout = pd.concat(all_parts, ignore_index=True)
-    else:
-        df_rollout = pd.DataFrame()
+    df_rollout = pd.concat(all_parts, ignore_index=True) if all_parts else pd.DataFrame()
 
     df_informative_with_ties = filter_informative_states(
         df_rollout=df_rollout,
@@ -256,12 +219,11 @@ def build_rollout_dataset_complex(
 
 
 def main() -> None:
-    build_rollout_dataset_complex(
+    build_rollout_dataset(
         include_canonical=True,
         include_complex_stochastic=True,
-        max_states_per_run=10,
-        # max_states_per_run=20,
-        output_prefix="rollout_dataset_compact_heuristics_complex",
+        max_states_per_run=12,
+        output_prefix="rollout_dataset_balanced_complex",
     )
 
 
