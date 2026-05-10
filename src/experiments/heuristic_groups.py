@@ -20,6 +20,21 @@
 # }
 
 
+# from __future__ import annotations
+
+# HEURISTIC_TO_GROUP = {
+#     "MPS": "Feasible",
+#     "FNI": "Feasible",
+
+#     "Ratio": "RatioUrgency",
+#     "Danger": "RatioUrgency",
+
+#     "Cluster": "Spatial",
+
+#     "NI": "Proximity",
+# }
+
+
 from __future__ import annotations
 
 HEURISTIC_TO_GROUP = {
