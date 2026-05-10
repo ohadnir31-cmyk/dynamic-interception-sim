@@ -417,8 +417,9 @@ def save_enriched_dataset(
 # ============================================================
 
 def main() -> None:
-    input_path = "rollout_dataset_compact_heuristics_complex_informative_no_ties.csv"
-
+    # input_path = "rollout_dataset_compact_heuristics_complex_informative_no_ties.csv"
+    input_path = "rollout_dataset_balanced_complex_informative_no_ties.csv"
+    
     df = load_data(input_path)
 
     print("\n=== Dataset ===")
