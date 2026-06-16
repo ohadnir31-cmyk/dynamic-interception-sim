@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict
-from typing import Dict, List, Optional, Sequence, Any
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -17,46 +16,33 @@ from src.sim.env import (
 from src.sim.heuristics import make_heuristics
 
 
-def extract_state_features(env: SimEnv) -> Dict[str, Any]:
-    active = env.active_threats()
+def n_active_bucket(n_active: int) -> str:
+    if n_active <= 1:
+        return "1"
+    if n_active <= 3:
+        return "2-3"
+    if n_active <= 6:
+        return "4-6"
+    if n_active <= 10:
+        return "7-10"
+    return "11+"
 
-    if not active:
-        return {
-            "t": env.t,
-            "interceptor_x": float(env.interceptor_pos[0]),
-            "interceptor_y": float(env.interceptor_pos[1]),
-            "N_active": 0,
-            "min_ttb": np.inf,
-            "mean_ttb": np.inf,
-            "min_positive_slack": np.inf,
-            "mean_slack": np.inf,
-            "count_negative_slack": 0,
-            "mean_tti": np.inf,
-            "cluster_index": np.inf,
-        }
 
-    ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
-    ttis = np.array([time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor) for th in active], dtype=float)
-    slacks = np.array([slack(env.interceptor_pos, th, env.p.v_interceptor) for th in active], dtype=float)
+def _safe_stat(values: np.ndarray, fn: str) -> float:
+    finite = values[np.isfinite(values)]
+    if len(finite) == 0:
+        return np.inf
 
-    positive_slacks = slacks[slacks >= 0]
+    if fn == "min":
+        return float(np.min(finite))
+    if fn == "mean":
+        return float(np.mean(finite))
+    if fn == "std":
+        return float(np.std(finite))
+    if fn == "median":
+        return float(np.median(finite))
 
-    positions = np.array([th.pos for th in active], dtype=float)
-    cluster_index = _mean_nearest_neighbor_distance(positions)
-
-    return {
-        "t": float(env.t),
-        "interceptor_x": float(env.interceptor_pos[0]),
-        "interceptor_y": float(env.interceptor_pos[1]),
-        "N_active": int(len(active)),
-        "min_ttb": float(np.min(ttbs)),
-        "mean_ttb": float(np.mean(ttbs)),
-        "min_positive_slack": float(np.min(positive_slacks)) if len(positive_slacks) > 0 else np.inf,
-        "mean_slack": float(np.mean(slacks)),
-        "count_negative_slack": int(np.sum(slacks < 0)),
-        "mean_tti": float(np.mean(ttis)),
-        "cluster_index": float(cluster_index),
-    }
+    raise ValueError(f"Unknown stat: {fn}")
 
 
 def _mean_nearest_neighbor_distance(positions: np.ndarray) -> float:
@@ -72,6 +58,87 @@ def _mean_nearest_neighbor_distance(positions: np.ndarray) -> float:
     return float(np.mean(distances))
 
 
+def extract_state_features(env: SimEnv) -> Dict[str, Any]:
+    active = env.active_threats()
+
+    if not active:
+        return {
+            "t": float(env.t),
+            "interceptor_x": float(env.interceptor_pos[0]),
+            "interceptor_y": float(env.interceptor_pos[1]),
+            "N_active": 0,
+            "N_active_bucket": "0",
+            "min_ttb": np.inf,
+            "mean_ttb": np.inf,
+            "std_ttb": np.inf,
+            "min_tti": np.inf,
+            "mean_tti": np.inf,
+            "std_tti": np.inf,
+            "min_slack": np.inf,
+            "mean_slack": np.inf,
+            "std_slack": np.inf,
+            "min_positive_slack": np.inf,
+            "count_feasible": 0,
+            "count_negative_slack": 0,
+            "feasible_ratio": 0.0,
+            "cluster_index": np.inf,
+            "spatial_spread_x": 0.0,
+            "spatial_spread_y": 0.0,
+            "spatial_dispersion": 0.0,
+        }
+
+    ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
+    ttis = np.array(
+        [time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor) for th in active],
+        dtype=float,
+    )
+    slacks = np.array(
+        [slack(env.interceptor_pos, th, env.p.v_interceptor) for th in active],
+        dtype=float,
+    )
+
+    feasible_mask = slacks >= 0
+    positive_slacks = slacks[feasible_mask]
+
+    positions = np.array([th.pos for th in active], dtype=float)
+    centroid = np.mean(positions, axis=0)
+
+    spatial_spread_x = float(np.std(positions[:, 0])) if len(positions) > 1 else 0.0
+    spatial_spread_y = float(np.std(positions[:, 1])) if len(positions) > 1 else 0.0
+    spatial_dispersion = (
+        float(np.mean(np.linalg.norm(positions - centroid, axis=1)))
+        if len(positions) > 1
+        else 0.0
+    )
+
+    return {
+        "t": float(env.t),
+        "interceptor_x": float(env.interceptor_pos[0]),
+        "interceptor_y": float(env.interceptor_pos[1]),
+        "N_active": int(len(active)),
+        "N_active_bucket": n_active_bucket(len(active)),
+        "min_ttb": _safe_stat(ttbs, "min"),
+        "mean_ttb": _safe_stat(ttbs, "mean"),
+        "std_ttb": _safe_stat(ttbs, "std"),
+        "min_tti": _safe_stat(ttis, "min"),
+        "mean_tti": _safe_stat(ttis, "mean"),
+        "std_tti": _safe_stat(ttis, "std"),
+        "min_slack": _safe_stat(slacks, "min"),
+        "mean_slack": _safe_stat(slacks, "mean"),
+        "std_slack": _safe_stat(slacks, "std"),
+        "min_positive_slack": (
+            float(np.min(positive_slacks)) if len(positive_slacks) > 0 else np.inf
+        ),
+        "count_feasible": int(np.sum(feasible_mask)),
+        "count_negative_slack": int(np.sum(slacks < 0)),
+        "feasible_ratio": float(np.mean(feasible_mask)),
+        "cluster_index": _mean_nearest_neighbor_distance(positions),
+        "spatial_spread_x": spatial_spread_x,
+        "spatial_spread_y": spatial_spread_y,
+        "spatial_dispersion": spatial_dispersion,
+    }
+
+
 def rollout_from_env(
     env_snapshot: SimEnv,
     heuristic_name: str,
@@ -79,11 +146,6 @@ def rollout_from_env(
 ) -> Dict[str, Any]:
     """
     Continue simulation from a copied environment using one fixed heuristic rule.
-
-    Important:
-    - The heuristic rule remains fixed.
-    - The selected target may change when the current target disappears.
-    - If preempt=True, the heuristic may also re-evaluate after new arrivals.
     """
 
     env = copy.deepcopy(env_snapshot)
@@ -126,29 +188,34 @@ def label_state_by_rollout(
     preempt: bool = False,
 ) -> Dict[str, Any]:
     """
-    For one state, evaluate each heuristic by rollout and choose the best one.
+    Evaluate all candidate heuristics from one state and determine the winner.
 
-    Label rule:
+    Winner rule:
     1. maximize future_intercepted
-    2. tie-break by minimizing future_escaped
-    3. if still tied, keep all winners in winner_set
+    2. if tied, minimize future_escaped
+    3. if still tied, keep a winner_set
     """
 
     results = []
 
     for h in candidate_heuristics:
-        r = rollout_from_env(
-            env_snapshot=env_snapshot,
-            heuristic_name=h,
-            preempt=preempt,
+        results.append(
+            rollout_from_env(
+                env_snapshot=env_snapshot,
+                heuristic_name=h,
+                preempt=preempt,
+            )
         )
-        results.append(r)
 
     best_intercepted = max(r["future_intercepted"] for r in results)
     candidates = [r for r in results if r["future_intercepted"] == best_intercepted]
 
     best_escaped = min(r["future_escaped"] for r in candidates)
-    winners = [r["rollout_heuristic"] for r in candidates if r["future_escaped"] == best_escaped]
+    winners = [
+        r["rollout_heuristic"]
+        for r in candidates
+        if r["future_escaped"] == best_escaped
+    ]
 
     return {
         "winner": winners[0] if len(winners) == 1 else "TIE",
@@ -171,23 +238,12 @@ def generate_rollout_labeled_dataset(
     max_states: Optional[int] = None,
 ) -> pd.DataFrame:
     """
-    Generate rollout labels from one scenario.
+    Generate state-level rollout labels from one scenario.
 
-    Steps:
-    1. Run a behavior policy to generate realistic states.
-    2. At selected decision states, copy the environment.
-    3. Roll out every candidate heuristic from that state.
-    4. Label the state with the best rollout heuristic.
-
-    behavior_heuristic:
-        The heuristic used to generate states.
-
-    candidate_heuristics:
-        The heuristics evaluated as labels.
-
-    decision_only:
-        If True, label only states with at least one active target.
-        If False, label every time step.
+    1. Run a behavior policy to generate realistic decision states.
+    2. Copy the environment at selected states.
+    3. Roll out each candidate heuristic from that state.
+    4. Label the state using the best rollout result.
     """
 
     env = SimEnv(params)
@@ -199,7 +255,6 @@ def generate_rollout_labeled_dataset(
 
     while not env.done():
         active = env.active_threats()
-
         should_label = (len(active) > 0) if decision_only else True
 
         if should_label:
@@ -215,6 +270,12 @@ def generate_rollout_labeled_dataset(
             row = {
                 "scenario": scenario_name,
                 "seed": params.seed,
+                "scenario_regime": params.scenario_regime,
+                "spatial_structure": params.spatial_structure,
+                "arrival_process": params.arrival_process,
+                "deadline_pressure": params.deadline_pressure,
+                "initial_targets": params.initial_targets,
+                "lambda_arrival": params.lambda_arrival,
                 "behavior_heuristic": behavior_heuristic,
                 "behavior_preempt": behavior_preempt,
                 "rollout_preempt": rollout_preempt,
@@ -227,11 +288,26 @@ def generate_rollout_labeled_dataset(
                 "best_future_escaped": label["best_future_escaped"],
             }
 
-            # Add per-heuristic rollout columns
-            for r in label["rollout_details"]:
+            details = list(label["rollout_details"])
+            ranked_details = sorted(
+                details,
+                key=lambda r: (
+                    -r["future_intercepted"],
+                    r["future_escaped"],
+                    r["rollout_heuristic"],
+                ),
+            )
+            rank_by_h = {
+                r["rollout_heuristic"]: rank
+                for rank, r in enumerate(ranked_details, start=1)
+            }
+
+            for r in details:
                 h = r["rollout_heuristic"]
                 row[f"{h}_future_intercepted"] = r["future_intercepted"]
                 row[f"{h}_future_escaped"] = r["future_escaped"]
+                row[f"{h}_regret"] = label["best_future_intercepted"] - r["future_intercepted"]
+                row[f"{h}_rank"] = rank_by_h[h]
 
             rows.append(row)
             state_counter += 1
@@ -239,7 +315,6 @@ def generate_rollout_labeled_dataset(
             if max_states is not None and state_counter >= max_states:
                 break
 
-        # Normal behavior-policy step
         active = env.active_threats()
 
         if target_id is None or all(th.id != target_id for th in active):
@@ -261,14 +336,6 @@ def generate_dataset_for_scenarios(
     rollout_preempt: bool = False,
     max_states_per_run: Optional[int] = None,
 ) -> pd.DataFrame:
-    """
-    Generate rollout-labeled data for multiple scenarios and behavior heuristics.
-
-    Recommended initially:
-    behavior_heuristics = ["NI", "MPS", "Cluster"]
-    candidate_heuristics = ["NI", "TTB", "MPS", "Weighted", "Cluster"]
-    """
-
     all_dfs = []
 
     for scenario_name, scenario_obj in scenarios.items():
