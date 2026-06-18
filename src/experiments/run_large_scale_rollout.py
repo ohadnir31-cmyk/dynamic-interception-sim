@@ -23,9 +23,9 @@ class ScenarioObj:
         self.params = params
 
 
-CANDIDATE_HEURISTICS = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+CANDIDATE_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
-DEFAULT_BEHAVIOR_HEURISTICS = ["NI", "FNI", "MPS", "Cluster"]
+DEFAULT_BEHAVIOR_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 
 REGIME_CONFIG: Dict[str, Dict[str, Any]] = {
