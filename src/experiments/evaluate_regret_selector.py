@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 
 
-HEURISTICS = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 OBSERVABLE_FEATURES = [
     "N_active",
