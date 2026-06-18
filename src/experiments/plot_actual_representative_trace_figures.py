@@ -11,10 +11,10 @@ import matplotlib.pyplot as plt
 
 from src.experiments.run_large_scale_rollout import make_large_scale_scenarios
 from src.sim.env import SimEnv, slack, time_to_boundary_x0, time_to_intercept
-from src.sim.heuristics import make_heuristics
+from src.sim.heuristics import DEFAULT_CLUSTER_TIME_WINDOW, make_heuristics
 
 
-HEURISTICS = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 
 def parse_scenario_index(scenario_name: str) -> int:
@@ -57,6 +57,18 @@ def get_scenario_params(scenario_name: str, seed: int):
     return scenarios[scenario_name].params
 
 
+def parse_bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return False
+    if isinstance(value, (int, np.integer)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
 def replay_behavior_to_selected_state(row: pd.Series, generator_seed: int) -> SimEnv:
     """
     Reconstruct the exact environment snapshot used by the state-labeling dataset.
@@ -73,7 +85,7 @@ def replay_behavior_to_selected_state(row: pd.Series, generator_seed: int) -> Si
     params = get_scenario_params(scenario_name, seed=generator_seed)
 
     behavior_heuristic = str(row.get("behavior_heuristic", "NI"))
-    behavior_preempt = bool(row.get("behavior_preempt", False))
+    behavior_preempt = parse_bool_value(row.get("behavior_preempt", False))
     target_state_id = int(row.get("state_id", 0))
 
     env = SimEnv(params)
@@ -211,6 +223,7 @@ def trace_from_env_snapshot(
                 "total_intercepted": int(env.intercepted),
                 "total_escaped": int(env.escaped),
                 "total_spawned": int(env.spawned),
+                "v_interceptor": float(env.p.v_interceptor),
             }
         )
 
@@ -320,6 +333,43 @@ def fmt(x: Any, digits: int = 2) -> str:
         return str(x)
 
 
+def frontier_cluster_member_ids(state: dict[str, Any]) -> set[int]:
+    """
+    Reconstruct the Frontier-Cluster neighborhood used in this plotted state.
+    This is used only for visualization, to highlight the dense local cluster.
+    """
+    active = state.get("active_threats", [])
+    if not active:
+        return set()
+
+    pI = np.array(state["interceptor_pos"], dtype=float)
+    vI = float(state.get("v_interceptor", 1.0))
+    r = max(vI * DEFAULT_CLUSTER_TIME_WINDOW, 1e-9)
+
+    def cluster_around(seed: dict[str, Any]) -> list[dict[str, Any]]:
+        seed_pos = np.array(seed["pos"], dtype=float)
+        return [
+            other
+            for other in active
+            if np.linalg.norm(np.array(other["pos"], dtype=float) - seed_pos) <= r
+        ]
+
+    clusters = [(seed, cluster_around(seed)) for seed in active]
+    _, chosen_cluster = max(
+        clusters,
+        key=lambda item: (
+            len(item[1]),
+            -min(float(member["pos"][0]) for member in item[1]),
+            -np.linalg.norm(np.array(item[0]["pos"], dtype=float) - pI),
+        ),
+    )
+    return {int(member["id"]) for member in chosen_cluster}
+
+
+def frontier_cluster_size(state: dict[str, Any]) -> int:
+    return len(frontier_cluster_member_ids(state))
+
+
 def plot_frame(
     ax,
     state: dict[str, Any],
@@ -350,6 +400,7 @@ def plot_frame(
     # Threats and velocity arrows
     active = state["active_threats"]
     chosen_id = state["chosen_target_id"]
+    cluster_member_ids = frontier_cluster_member_ids(state) if policy_name == "FCluster" else set()
 
     for th in active:
         pos = np.array(th["pos"], dtype=float)
@@ -360,12 +411,22 @@ def plot_frame(
         size = 38
         z = 3
 
+        edgecolor = "black"
+        linewidth = 0.4
+
+        if int(th["id"]) in cluster_member_ids:
+            edgecolor = "#ff7f0e"
+            linewidth = 1.5
+            size = 55
+
         if is_chosen:
             color = "#2ca02c"
+            edgecolor = "black"
+            linewidth = 0.8
             size = 75
             z = 5
 
-        ax.scatter(pos[0], pos[1], s=size, color=color, edgecolor="black", linewidth=0.4, zorder=z)
+        ax.scatter(pos[0], pos[1], s=size, color=color, edgecolor=edgecolor, linewidth=linewidth, zorder=z)
 
         # Velocity direction arrow, scaled for visibility.
         speed = np.linalg.norm(vel)
@@ -415,13 +476,17 @@ def plot_frame(
         )
 
     f = state["features"]
+    cluster_line = ""
+    if policy_name == "FCluster":
+        cluster_line = f"\ncluster size = {frontier_cluster_size(state)}"
 
     info = (
         f"t = {state['t']:.2f}\n"
         f"N active = {f.get('N_active', len(active))}\n"
         f"min TTB = {fmt(f.get('min_ttb'))}\n"
         f"min slack = {fmt(f.get('min_slack'))}\n"
-        f"min +slack = {fmt(f.get('min_positive_slack'))}\n"
+        f"min +slack = {fmt(f.get('min_positive_slack'))}"
+        f"{cluster_line}\n"
         f"future I/E so far = {state['intercepted_so_far']} / {state['escaped_so_far']}"
     )
 
