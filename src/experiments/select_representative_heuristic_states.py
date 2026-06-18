@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-HEURISTICS = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 DEFAULT_FEATURES_TO_SHOW = [
     "N_active",
