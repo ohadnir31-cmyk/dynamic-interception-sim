@@ -68,13 +68,13 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
     )
 
     # -------------------------------------------------
-    # 3. TTB-favorable: urgency matters, but feasibility is still present
+    # 3. FMTTB-favorable: urgency matters under feasibility
     # -------------------------------------------------
-    scenarios["manual_ttb_favorable"] = CanonicalScenario(
-        name="manual_ttb_favorable",
+    scenarios["manual_fmttb_favorable"] = CanonicalScenario(
+        name="manual_fmttb_favorable",
         description=(
             "One target has a clearly shorter time-to-boundary while still being feasible. "
-            "Designed to favor urgency-driven policies."
+            "Designed to favor feasible urgency-driven policies such as FMTTB."
         ),
         params=ScenarioParams(
             seed=0,
@@ -87,7 +87,7 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
             manual_threats=[
                 # relatively close but not urgent
                 {"t": 0.0, "pos": [24.0, 4.0], "vel": [-8.0, 0.0]},
-                # more urgent, should push TTB-like behavior
+                # more urgent, should push FMTTB-like behavior
                 {"t": 0.0, "pos": [10.0, 18.0], "vel": [-10.0, 0.0]},
                 # mild background pressure
                 {"t": 1.0, "pos": [28.0, -14.0], "vel": [-8.0, 0.0]},
@@ -96,13 +96,13 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
     )
 
     # -------------------------------------------------
-    # 4. Cluster should help
+    # 4. Frontier-Cluster should help
     # -------------------------------------------------
-    scenarios["manual_cluster_favorable"] = CanonicalScenario(
-        name="manual_cluster_favorable",
+    scenarios["manual_frontier_cluster_favorable"] = CanonicalScenario(
+        name="manual_frontier_cluster_favorable",
         description=(
             "Three threats are spatially clustered, while one threat is isolated. "
-            "Designed to test whether Cluster / Weighted gain from moving toward dense areas."
+            "Designed to test whether Frontier-Cluster gains from moving toward the leading edge of a dense group."
         ),
         params=ScenarioParams(
             seed=0,
@@ -124,13 +124,13 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
     )
 
     # -------------------------------------------------
-    # 5. Weighted / compromise regime
+    # 5. Feasible tradeoff / compromise regime
     # -------------------------------------------------
-    scenarios["manual_weighted_tradeoff"] = CanonicalScenario(
-        name="manual_weighted_tradeoff",
+    scenarios["manual_feasible_tradeoff"] = CanonicalScenario(
+        name="manual_feasible_tradeoff",
         description=(
             "A compromise regime where neither pure proximity nor pure urgency is obviously best. "
-            "Designed to test weighted tradeoff behavior."
+            "Designed to test tradeoffs among FNI, FMTTB, and MPS behavior."
         ),
         params=ScenarioParams(
             seed=0,
@@ -202,13 +202,13 @@ def get_canonical_scenarios() -> Dict[str, CanonicalScenario]:
     )
 
     # -------------------------------------------------
-    # 8. TTB clearly favorable
+    # 8. FMTTB clearly favorable
     # -------------------------------------------------
-    scenarios["manual_ttb_strong"] = CanonicalScenario(
-        name="manual_ttb_strong",
+    scenarios["manual_fmttb_strong"] = CanonicalScenario(
+        name="manual_fmttb_strong",
         description=(
             "One target has extremely short time-to-boundary but is still feasible. "
-            "Urgency-driven policy should dominate."
+            "Feasible urgency-driven policy should dominate."
         ),
         params=ScenarioParams(
             seed=0,
@@ -235,4 +235,4 @@ def get_stage1_heuristics():
     """
     Small heuristic set for the initial qualitative and quantitative analysis.
     """
-    return ["NI", "TTB", "MPS", "Weighted", "Cluster", "Random"]
+    return ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
