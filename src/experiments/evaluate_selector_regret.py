@@ -13,7 +13,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.model_selection import train_test_split
 
 
-DEFAULT_CANDIDATE_HEURISTICS = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+DEFAULT_CANDIDATE_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 DEFAULT_FEATURE_COLUMNS = [
     "N_active",
