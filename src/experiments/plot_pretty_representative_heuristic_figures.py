@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-HEURISTIC_ORDER = ["NI", "FNI", "MPS", "Danger", "Ratio", "Cluster"]
+HEURISTIC_ORDER = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 
 def load_inputs(input_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
