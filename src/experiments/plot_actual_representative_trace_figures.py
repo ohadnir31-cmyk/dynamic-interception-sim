@@ -425,13 +425,15 @@ def plot_frame(
         f"future I/E so far = {state['intercepted_so_far']} / {state['escaped_so_far']}"
     )
 
+    # Place the information box in the upper-right corner.
+    # The upper-left area is often where boundary penetration dynamics are visible.
     ax.text(
-        0.02,
+        0.98,
         0.98,
         info,
         transform=ax.transAxes,
         va="top",
-        ha="left",
+        ha="right",
         fontsize=8.5,
         bbox=dict(boxstyle="round,pad=0.30", facecolor="white", edgecolor="gray", alpha=0.92),
     )
