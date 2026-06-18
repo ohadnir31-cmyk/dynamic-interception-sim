@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - fallback if tqdm is unavailable
+    tqdm = None
 
 from src.sim.env import (
     SimEnv,
@@ -56,6 +61,32 @@ def _mean_nearest_neighbor_distance(positions: np.ndarray) -> float:
         distances.append(np.min(d))
 
     return float(np.mean(distances))
+
+
+def _progress(iterable, *, total: Optional[int], desc: str, disable: bool = False):
+    """
+    Small tqdm wrapper.
+
+    This keeps the code usable even if tqdm is not installed, while showing a
+    progress bar in Colab/Jupyter when tqdm is available.
+    """
+    if disable or tqdm is None:
+        return iterable
+
+    return tqdm(iterable, total=total, desc=desc, dynamic_ncols=True)
+
+
+def _validate_requested_heuristics(
+    requested: Sequence[str],
+    available: Dict[str, Any],
+    label: str,
+) -> None:
+    missing = [h for h in requested if h not in available]
+    if missing:
+        raise ValueError(
+            f"Unknown {label}: {missing}. "
+            f"Available heuristics are: {list(available.keys())}"
+        )
 
 
 def extract_state_features(env: SimEnv) -> Dict[str, Any]:
@@ -150,6 +181,13 @@ def rollout_from_env(
 
     env = copy.deepcopy(env_snapshot)
     heuristics = make_heuristics(seed=env.p.seed)
+
+    if heuristic_name not in heuristics:
+        raise KeyError(
+            f"Unknown rollout heuristic: {heuristic_name}. "
+            f"Available: {list(heuristics.keys())}"
+        )
+
     h = heuristics[heuristic_name]
 
     start_intercepted = env.intercepted
@@ -227,6 +265,22 @@ def label_state_by_rollout(
     }
 
 
+def _rank_rollout_details(details: List[Dict[str, Any]]) -> Dict[str, int]:
+    ranked_details = sorted(
+        details,
+        key=lambda r: (
+            -r["future_intercepted"],
+            r["future_escaped"],
+            r["rollout_heuristic"],
+        ),
+    )
+
+    return {
+        r["rollout_heuristic"]: rank
+        for rank, r in enumerate(ranked_details, start=1)
+    }
+
+
 def generate_rollout_labeled_dataset(
     params: ScenarioParams,
     scenario_name: str,
@@ -246,8 +300,12 @@ def generate_rollout_labeled_dataset(
     4. Label the state using the best rollout result.
     """
 
+    heuristics = make_heuristics(seed=params.seed)
+    _validate_requested_heuristics([behavior_heuristic], heuristics, "behavior heuristic")
+    _validate_requested_heuristics(candidate_heuristics, heuristics, "candidate heuristics")
+
     env = SimEnv(params)
-    behavior_h = make_heuristics(seed=params.seed)[behavior_heuristic]
+    behavior_h = heuristics[behavior_heuristic]
 
     rows: List[Dict[str, Any]] = []
     target_id: Optional[int] = None
@@ -289,18 +347,7 @@ def generate_rollout_labeled_dataset(
             }
 
             details = list(label["rollout_details"])
-            ranked_details = sorted(
-                details,
-                key=lambda r: (
-                    -r["future_intercepted"],
-                    r["future_escaped"],
-                    r["rollout_heuristic"],
-                ),
-            )
-            rank_by_h = {
-                r["rollout_heuristic"]: rank
-                for rank, r in enumerate(ranked_details, start=1)
-            }
+            rank_by_h = _rank_rollout_details(details)
 
             for r in details:
                 h = r["rollout_heuristic"]
@@ -329,29 +376,108 @@ def generate_rollout_labeled_dataset(
     return pd.DataFrame(rows)
 
 
+def _scenario_behavior_jobs(
+    scenarios: Dict[str, Any],
+    behavior_heuristics: Sequence[str],
+) -> List[Tuple[str, Any, str]]:
+    jobs: List[Tuple[str, Any, str]] = []
+
+    for scenario_name, scenario_obj in scenarios.items():
+        for behavior_h in behavior_heuristics:
+            jobs.append((scenario_name, scenario_obj, behavior_h))
+
+    return jobs
+
+
 def generate_dataset_for_scenarios(
     scenarios: Dict[str, Any],
     behavior_heuristics: Sequence[str],
     candidate_heuristics: Sequence[str],
     rollout_preempt: bool = False,
     max_states_per_run: Optional[int] = None,
+    show_progress: bool = True,
 ) -> pd.DataFrame:
-    all_dfs = []
+    """
+    Generate rollout-labeled states for many scenarios and behavior heuristics.
 
-    for scenario_name, scenario_obj in scenarios.items():
-        for behavior_h in behavior_heuristics:
-            df_part = generate_rollout_labeled_dataset(
-                params=scenario_obj.params,
-                scenario_name=scenario_name,
-                behavior_heuristic=behavior_h,
-                candidate_heuristics=candidate_heuristics,
-                behavior_preempt=False,
-                rollout_preempt=rollout_preempt,
-                decision_only=True,
-                max_states=max_states_per_run,
-            )
+    This is the expensive state-level counterfactual labeling stage. For each
+    scenario and each behavior heuristic, up to max_states_per_run decision
+    states are sampled. From each sampled state, all candidate heuristics are
+    rolled out counterfactually.
 
+    In Colab/Jupyter, show_progress=True displays a tqdm progress bar over
+    scenario-behavior jobs. This makes long runs look alive instead of stuck.
+    """
+
+    if not scenarios:
+        return pd.DataFrame()
+
+    available = make_heuristics(seed=0)
+    _validate_requested_heuristics(behavior_heuristics, available, "behavior heuristics")
+    _validate_requested_heuristics(candidate_heuristics, available, "candidate heuristics")
+
+    jobs = _scenario_behavior_jobs(scenarios, behavior_heuristics)
+    total_jobs = len(jobs)
+
+    print(
+        "State-labeling jobs: "
+        f"{len(scenarios)} scenarios × {len(behavior_heuristics)} behavior heuristics "
+        f"= {total_jobs} jobs"
+    )
+
+    if max_states_per_run is not None:
+        expected_counterfactual_rollouts = (
+            len(scenarios)
+            * len(behavior_heuristics)
+            * max_states_per_run
+            * len(candidate_heuristics)
+        )
+        print(
+            "Upper-bound counterfactual rollouts: "
+            f"{expected_counterfactual_rollouts:,} "
+            f"({len(scenarios)} × {len(behavior_heuristics)} × "
+            f"{max_states_per_run} × {len(candidate_heuristics)})"
+        )
+
+    all_dfs: List[pd.DataFrame] = []
+    total_rows = 0
+
+    iterator = _progress(
+        jobs,
+        total=total_jobs,
+        desc="State-level labels",
+        disable=not show_progress,
+    )
+
+    for job_index, (scenario_name, scenario_obj, behavior_h) in enumerate(iterator, start=1):
+        df_part = generate_rollout_labeled_dataset(
+            params=scenario_obj.params,
+            scenario_name=scenario_name,
+            behavior_heuristic=behavior_h,
+            candidate_heuristics=candidate_heuristics,
+            behavior_preempt=False,
+            rollout_preempt=rollout_preempt,
+            decision_only=True,
+            max_states=max_states_per_run,
+        )
+
+        if not df_part.empty:
             all_dfs.append(df_part)
+            total_rows += len(df_part)
+
+        if tqdm is not None and hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(
+                {
+                    "scenario": scenario_name[:24],
+                    "behavior": behavior_h,
+                    "rows": total_rows,
+                }
+            )
+        elif job_index % 50 == 0 or job_index == total_jobs:
+            print(
+                f"Completed {job_index}/{total_jobs} state-labeling jobs; "
+                f"rows so far: {total_rows}"
+            )
 
     if not all_dfs:
         return pd.DataFrame()
