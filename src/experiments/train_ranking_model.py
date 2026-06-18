@@ -14,11 +14,10 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 CANDIDATE_HEURISTICS = [
     "NI",
-    "MPS",
     "FNI",
-    "Ratio",
-    "Danger",
-    "Cluster",
+    "FMTTB",
+    "MPS",
+    "FCluster",
 ]
 
 BASE_FEATURE_COLS = [
