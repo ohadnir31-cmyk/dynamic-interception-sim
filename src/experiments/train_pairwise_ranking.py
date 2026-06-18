@@ -15,11 +15,10 @@ from sklearn.metrics import accuracy_score
 
 CANDIDATE_HEURISTICS = [
     "NI",
-    "MPS",
     "FNI",
-    "Ratio",
-    "Danger",
-    "Cluster",
+    "FMTTB",
+    "MPS",
+    "FCluster",
 ]
 
 BASE_FEATURE_COLS = [
