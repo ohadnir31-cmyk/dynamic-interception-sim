@@ -90,17 +90,18 @@ def build_rollout_dataset(
 
     candidate_heuristics = [
         "NI",
-        "MPS",
         "FNI",
-        "Ratio",
-        "Danger",
-        "Cluster",
+        "FMTTB",
+        "MPS",
+        "FCluster",
     ]
 
     behavior_heuristics = [
         "NI",
-        "Ratio",
-        "Cluster",
+        "FNI",
+        "FMTTB",
+        "MPS",
+        "FCluster",
     ]
 
     scenarios: dict[str, Any] = {}
