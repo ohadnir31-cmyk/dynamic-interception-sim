@@ -36,3 +36,39 @@ The current goal is to build a trustworthy dynamic simulation environment, defin
 - Weighted targets
 - Splitting threats / submunitions
 - Event-driven decision logic
+
+#######################
+# Working Notes - Dynamic Interception Sim
+#######################
+## Current proposal-level heuristic portfolio
+
+The current clean portfolio is:
+
+- NI - nearest active target by geometric distance.
+- FNI - nearest feasible target by time-to-intercept.
+- FMTTB - feasible target with minimum time-to-boundary.
+- MPS - feasible target with minimum positive slack.
+- FCluster - Frontier-Cluster: select the leading-edge target of the densest local target neighborhood.
+
+Danger and Ratio were intentionally removed from the current proposal-level portfolio.
+Composite priority / danger scores may be revisited in future work after heterogeneous target values are introduced.
+
+## Frontier-Cluster definition
+
+A local neighborhood radius is defined by interceptor mobility:
+
+r = v_interceptor * cluster_time_window
+
+The current default is cluster_time_window = 5.0.
+
+For each target, define a local neighborhood as all active targets within radius r.
+Choose the densest local neighborhood. If there is a tie, prefer the neighborhood whose leading target is closest to the protected boundary x = 0.
+From the selected neighborhood, choose the target with the smallest x-coordinate.
+
+## Main next analyses
+
+- Run large-scale rollout labels using the clean portfolio.
+- Evaluate observable-only winner classifier and observable-only regret selector.
+- Compare learned selectors against fixed baselines.
+- Produce representative diagnostic trace figures from real rollout states.
+- Use future work to discuss regime-aware selectors, regret/ranking models, closed-loop adaptive deployment, and weighted targets.
