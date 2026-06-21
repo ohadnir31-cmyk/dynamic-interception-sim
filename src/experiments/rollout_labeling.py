@@ -120,7 +120,7 @@ def extract_state_features(env: SimEnv) -> Dict[str, Any]:
 
     ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
     ttis = np.array(
-        [time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor) for th in active],
+        [time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor, th.vel) for th in active],
         dtype=float,
     )
     slacks = np.array(
