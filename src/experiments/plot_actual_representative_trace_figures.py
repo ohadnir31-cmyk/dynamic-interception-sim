@@ -682,7 +682,6 @@ def make_shared_legend_handles() -> list[Any]:
         Line2D([0], [0], marker="o", markerfacecolor="white", markeredgecolor="#ff7f0e", linestyle="None", markersize=8, label="FCluster neighborhood"),
     ]
 
-
 def plot_trace_comparison(
     selected_for: str,
     scenario_name: str,
@@ -730,10 +729,12 @@ def plot_trace_comparison(
     n_cols = max(1, min(int(panels_per_row), n_panels))
     n_rows = int(math.ceil(n_panels / n_cols))
 
-    # Two panels per row is usually the clearest layout for manual inspection.
-    # Extra horizontal room is reserved for a per-panel legend outside each axis.
-    fig_width = max(15.5, 7.9 * n_cols)
-    fig_height = max(5.2, 5.15 * n_rows)
+    # Larger figure, without changing the plotting logic.
+    # This gives each equal-aspect subplot more physical space,
+    # while keeping the per-panel legend outside the axes.
+    fig_width = max(20.0, 10.0 * n_cols)
+    fig_height = max(6.8, 6.6 * n_rows)
+
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
@@ -746,6 +747,7 @@ def plot_trace_comparison(
     for idx, spec in enumerate(panel_specs):
         row_idx = idx // n_cols
         col_idx = idx % n_cols
+
         plot_frame(
             ax=flat_axes[idx],
             state=spec["state"],
@@ -775,20 +777,20 @@ def plot_trace_comparison(
         y=0.985,
     )
 
-    # Per-panel legends are placed outside each axis inside plot_frame().
-    # Leave enough horizontal space between panels and below each row for the
-    # compact diagnostic info boxes.
+    # Slightly more aggressive use of the available page.
+    # We still leave room for the per-panel legends and diagnostic text boxes.
     fig.subplots_adjust(
-        left=0.055,
-        right=0.90,
-        top=0.86,
-        bottom=0.085,
-        wspace=0.72,
-        hspace=0.70,
+        left=0.045,
+        right=0.93,
+        top=0.90,
+        bottom=0.060,
+        wspace=0.58,
+        hspace=0.58,
     )
 
     safe_scenario = scenario_name.replace("/", "_").replace("\\", "_")
     path = output_dir / f"actual_trace_{selected_for}_vs_{runner_up}_{safe_scenario}.png"
+
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
