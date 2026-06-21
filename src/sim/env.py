@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
+EPS = 1e-9
+
+
 @dataclass
 class ScenarioParams:
     seed: int = 0
@@ -54,20 +57,124 @@ class Threat:
 
 
 def time_to_boundary_x0(pos: np.ndarray, vel: np.ndarray) -> float:
+    """
+    Time until the target reaches the protected boundary x = 0.
+
+    Returns inf if the target is not moving toward the boundary.
+    """
     x = float(pos[0])
     vx = float(vel[0])
+
     if vx >= 0:
         return np.inf
+
     t = (0.0 - x) / vx
-    return t if t >= 0 else np.inf
+    return float(t) if t >= 0 else np.inf
 
 
-def time_to_intercept(interceptor_pos: np.ndarray, target_pos: np.ndarray, vI: float) -> float:
-    return float(np.linalg.norm(target_pos - interceptor_pos) / max(1e-9, vI))
+def time_to_intercept(
+    interceptor_pos: np.ndarray,
+    target_pos: np.ndarray,
+    vI: float,
+    target_vel: Optional[np.ndarray] = None,
+) -> float:
+    """
+    Estimate time-to-intercept.
+
+    If target_vel is provided, this solves the constant-velocity lead-intercept
+    equation:
+
+        ||target_pos + target_vel * t - interceptor_pos|| = vI * t
+
+    and returns the smallest non-negative solution. This is the time required
+    for an interceptor flying at speed vI to meet the moving target by aiming at
+    the predicted future intercept point.
+
+    If target_vel is omitted, the function falls back to the older static
+    distance / speed calculation. This fallback is kept only for backward
+    compatibility with older analysis notebooks.
+    """
+    pI = np.array(interceptor_pos, dtype=float)
+    pT = np.array(target_pos, dtype=float)
+    speed = max(float(vI), EPS)
+
+    r = pT - pI
+
+    if target_vel is None:
+        return float(np.linalg.norm(r) / speed)
+
+    vT = np.array(target_vel, dtype=float)
+
+    c = float(np.dot(r, r))
+    if c <= EPS:
+        return 0.0
+
+    a = float(np.dot(vT, vT) - speed * speed)
+    b = float(2.0 * np.dot(r, vT))
+
+    # Linear case: a ~= 0.
+    if abs(a) <= EPS:
+        if abs(b) <= EPS:
+            return np.inf
+        t = -c / b
+        return float(t) if t >= 0 else np.inf
+
+    disc = b * b - 4.0 * a * c
+    if disc < 0:
+        return np.inf
+
+    sqrt_disc = float(np.sqrt(max(0.0, disc)))
+    roots = [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)]
+    nonnegative_roots = [float(t) for t in roots if t >= -EPS]
+
+    if not nonnegative_roots:
+        return np.inf
+
+    return max(0.0, min(nonnegative_roots))
+
+
+def predicted_intercept_point(
+    interceptor_pos: np.ndarray,
+    target_pos: np.ndarray,
+    target_vel: np.ndarray,
+    vI: float,
+) -> np.ndarray:
+    """
+    Predicted lead-intercept point for a moving target.
+
+    If no finite lead-intercept solution exists, fall back to the target's
+    current position. This keeps the simulator well-defined even for cases in
+    which the target is too fast or geometrically unreachable.
+    """
+    tti = time_to_intercept(
+        interceptor_pos=interceptor_pos,
+        target_pos=target_pos,
+        vI=vI,
+        target_vel=target_vel,
+    )
+
+    if not np.isfinite(tti):
+        return np.array(target_pos, dtype=float).copy()
+
+    return np.array(target_pos, dtype=float) + np.array(target_vel, dtype=float) * tti
 
 
 def slack(interceptor_pos: np.ndarray, th: Threat, vI: float) -> float:
-    return time_to_boundary_x0(th.pos, th.vel) - time_to_intercept(interceptor_pos, th.pos, vI)
+    """
+    Feasibility margin for a single moving target.
+
+    slack = TTB - TTI
+
+    where TTB is time-to-boundary and TTI is the moving-target lead-intercept
+    time. A non-negative slack means that, under the lead-intercept model, the
+    interceptor can reach the target before the target reaches x = 0.
+    """
+    return time_to_boundary_x0(th.pos, th.vel) - time_to_intercept(
+        interceptor_pos=interceptor_pos,
+        target_pos=th.pos,
+        target_vel=th.vel,
+        vI=vI,
+    )
 
 
 def move_toward(p: np.ndarray, q: np.ndarray, speed: float, dt: float) -> np.ndarray:
@@ -90,6 +197,12 @@ class SimEnv:
     Protected boundary: x = 0.
     A target penetrates the boundary if x <= 0.
     If manual_threats is provided, stochastic spawning is disabled.
+
+    Interceptor guidance model:
+        When a target is assigned, the interceptor steers toward the predicted
+        moving-target lead-intercept point rather than toward the target's
+        current position. The guidance point is recomputed at every simulation
+        step for the currently assigned target.
     """
 
     def __init__(self, params: ScenarioParams):
@@ -219,49 +332,55 @@ class SimEnv:
             self._add_stochastic_threat()
         return arrivals
 
+    def _select_target_object(self, target_id: Optional[int]) -> Optional[Threat]:
+        if target_id is None:
+            return None
+
+        for th in self.active_threats():
+            if th.id == target_id:
+                return th
+
+        return None
+
+    def _interceptor_destination(self, target: Optional[Threat]) -> np.ndarray:
+        if target is None:
+            return np.array(self.p.home, dtype=float)
+
+        return predicted_intercept_point(
+            interceptor_pos=self.interceptor_pos,
+            target_pos=target.pos,
+            target_vel=target.vel,
+            vI=self.p.v_interceptor,
+        )
+
     def step(self, target_id: Optional[int]) -> Dict[str, int]:
         events = {"arrival": 0, "intercept": 0, "escape": 0}
 
-        # 1. Arrivals.
+        # 1. Arrivals at the current time.
         if self.p.manual_threats is not None:
             events["arrival"] += self._spawn_manual_threats_due()
         else:
             events["arrival"] += self._spawn_stochastic_if_due()
 
-        # 2. Target motion.
-        for th in self.active_threats():
-            th.pos = th.pos + th.vel * self.p.dt
+        # 2. Lead-pursuit interceptor guidance based on the current state.
+        target = self._select_target_object(target_id)
+        destination = self._interceptor_destination(target)
 
-        # 3. Boundary penetration.
-        for th in self.active_threats():
-            if th.pos[0] <= 0.0:
-                th.escaped = True
-                self.escaped += 1
-                events["escape"] += 1
-
-        # 4. Interceptor motion.
-        active = self.active_threats()
-        target = None
-
-        if target_id is not None:
-            for th in active:
-                if th.id == target_id:
-                    target = th
-                    break
-
-        if target is None:
-            destination = np.array(self.p.home, dtype=float)
-        else:
-            destination = target.pos
-
-        self.interceptor_pos = move_toward(
+        new_interceptor_pos = move_toward(
             self.interceptor_pos,
             destination,
             self.p.v_interceptor,
             self.p.dt,
         )
 
-        # 5. Interception.
+        # 3. Advance active threats and interceptor over this time step.
+        #    This is a discrete-time approximation of simultaneous motion.
+        for th in self.active_threats():
+            th.pos = th.pos + th.vel * self.p.dt
+
+        self.interceptor_pos = new_interceptor_pos
+
+        # 4. Interceptions after the simultaneous movement update.
         victims = []
         for th in self.active_threats():
             if float(np.linalg.norm(th.pos - self.interceptor_pos)) <= self.p.kill_radius:
@@ -271,6 +390,13 @@ class SimEnv:
             th.intercepted = True
             self.intercepted += 1
             events["intercept"] += 1
+
+        # 5. Boundary penetration for remaining active threats.
+        for th in self.active_threats():
+            if th.pos[0] <= 0.0:
+                th.escaped = True
+                self.escaped += 1
+                events["escape"] += 1
 
         self.t += self.p.dt
         return events
