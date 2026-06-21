@@ -89,7 +89,7 @@ def run_episode_with_trace(
                     "pos": th.pos.copy(),
                     "vel": th.vel.copy(),
                     "ttb": float(time_to_boundary_x0(th.pos, th.vel)),
-                    "tti": float(time_to_intercept(env.interceptor_pos, th.pos, params.v_interceptor)),
+                    "tti": float(time_to_intercept(env.interceptor_pos, th.pos, params.v_interceptor, th.vel)),
                     "slack": float(slack(env.interceptor_pos, th, params.v_interceptor)),
                 }
                 for th in active_before
