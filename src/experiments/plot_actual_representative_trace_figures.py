@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from src.experiments.run_large_scale_rollout import make_large_scale_scenarios
 from src.sim.env import SimEnv, predicted_intercept_point, slack, time_to_boundary_x0, time_to_intercept
@@ -309,6 +312,15 @@ def collect_plot_limits(traces: list[list[dict[str, Any]]]) -> tuple[tuple[float
                 xs.append(float(pos[0]))
                 ys.append(float(pos[1]))
 
+                # Also include predicted lead-intercept points in the limits.
+                # Otherwise lead arrows can be clipped, especially when the
+                # estimated intercept point is beyond the protected boundary.
+                if "intercept_point" in th:
+                    ip = np.array(th["intercept_point"], dtype=float)
+                    if np.all(np.isfinite(ip)):
+                        xs.append(float(ip[0]))
+                        ys.append(float(ip[1]))
+
     if len(xs) == 1:
         return (-1, 10), (-10, 10)
 
@@ -534,17 +546,19 @@ def plot_frame(
         f"future I/E so far = {state['intercepted_so_far']} / {state['escaped_so_far']}"
     )
 
-    # Place the information box in the upper-right corner.
-    # The upper-left area is often where boundary penetration dynamics are visible.
+    # Keep the diagnostic info outside the plotting area.
+    # This avoids hiding targets after ax.set_aspect("equal").
+    info_compact = " | ".join(info.splitlines())
     ax.text(
-        0.98,
-        0.98,
-        info,
+        0.5,
+        -0.20,
+        info_compact,
         transform=ax.transAxes,
         va="top",
-        ha="right",
-        fontsize=8.5,
-        bbox=dict(boxstyle="round,pad=0.30", facecolor="white", edgecolor="gray", alpha=0.92),
+        ha="center",
+        fontsize=7.2,
+        bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="gray", alpha=0.95),
+        clip_on=False,
     )
 
     title_prefix = "WINNER" if is_winner else "RUNNER-UP"
@@ -561,6 +575,21 @@ def plot_frame(
     ax.grid(alpha=0.25)
 
 
+def make_shared_legend_handles() -> list[Any]:
+    """Legend entries shared by all trace subplots."""
+    return [
+        Patch(facecolor="#ffdddd", edgecolor="none", alpha=0.45, label="x < 0 penetration region"),
+        Line2D([0], [0], color="red", linestyle="--", linewidth=1.4, label="protected boundary x=0"),
+        Line2D([0], [0], marker="*", color="black", linestyle="None", markersize=10, label="interceptor"),
+        Line2D([0], [0], color="black", linewidth=1.7, label="interceptor path"),
+        Line2D([0], [0], marker="o", color="#1f77b4", linestyle="None", markersize=7, label="active target"),
+        Line2D([0], [0], marker="o", color="#2ca02c", linestyle="None", markersize=8, label="chosen target"),
+        Line2D([0], [0], color="#2ca02c", linewidth=1.6, label="lead guidance"),
+        Line2D([0], [0], marker="x", color="#2ca02c", linestyle="None", markersize=8, label="predicted intercept point"),
+        Line2D([0], [0], marker="o", markerfacecolor="white", markeredgecolor="#ff7f0e", linestyle="None", markersize=8, label="FCluster neighborhood"),
+    ]
+
+
 def plot_trace_comparison(
     selected_for: str,
     scenario_name: str,
@@ -571,46 +600,66 @@ def plot_trace_comparison(
     runner_up: str,
     output_dir: Path,
     max_frames: int,
+    panels_per_row: int = 4,
 ) -> Path:
     frame_times = pick_frame_times(winner_trace, runner_trace, max_frames=max_frames)
     xlim, ylim = collect_plot_limits([winner_trace, runner_trace])
 
-    n_rows = len(frame_times)
+    panel_specs: list[dict[str, Any]] = []
+    for t in frame_times:
+        panel_specs.append(
+            {
+                "state": nearest_state_at_time(winner_trace, t),
+                "trace": winner_trace,
+                "policy_name": selected_for,
+                "frame_time": t,
+                "is_winner": True,
+            }
+        )
+        panel_specs.append(
+            {
+                "state": nearest_state_at_time(runner_trace, t),
+                "trace": runner_trace,
+                "policy_name": runner_up,
+                "frame_time": t,
+                "is_winner": False,
+            }
+        )
+
+    n_panels = len(panel_specs)
+    n_cols = max(1, min(int(panels_per_row), n_panels))
+    n_rows = int(math.ceil(n_panels / n_cols))
+
+    # Wide layout: with equal axes, 4 panels per row usually uses the page
+    # much better than the older 2-column layout.
+    fig_width = max(13.0, 4.15 * n_cols + 2.2)
+    fig_height = max(4.5, 4.55 * n_rows)
     fig, axes = plt.subplots(
         n_rows,
-        2,
-        figsize=(14.5, 4.0 * n_rows),
+        n_cols,
+        figsize=(fig_width, fig_height),
         squeeze=False,
-        constrained_layout=True,
+        constrained_layout=False,
     )
 
-    for r, t in enumerate(frame_times):
-        w_state = nearest_state_at_time(winner_trace, t)
-        b_state = nearest_state_at_time(runner_trace, t)
-
+    flat_axes = axes.ravel()
+    for idx, spec in enumerate(panel_specs):
+        row_idx = idx // n_cols
+        col_idx = idx % n_cols
         plot_frame(
-            ax=axes[r, 0],
-            state=w_state,
-            trace=winner_trace,
-            policy_name=selected_for,
-            frame_time=t,
+            ax=flat_axes[idx],
+            state=spec["state"],
+            trace=spec["trace"],
+            policy_name=spec["policy_name"],
+            frame_time=spec["frame_time"],
             xlim=xlim,
             ylim=ylim,
-            is_winner=True,
-            show_ylabel=True,
+            is_winner=spec["is_winner"],
+            show_ylabel=(col_idx == 0),
         )
 
-        plot_frame(
-            ax=axes[r, 1],
-            state=b_state,
-            trace=runner_trace,
-            policy_name=runner_up,
-            frame_time=t,
-            xlim=xlim,
-            ylim=ylim,
-            is_winner=False,
-            show_ylabel=False,
-        )
+    for ax in flat_axes[n_panels:]:
+        ax.axis("off")
 
     fig.suptitle(
         (
@@ -623,6 +672,29 @@ def plot_trace_comparison(
         ),
         fontsize=15,
         fontweight="bold",
+        y=0.985,
+    )
+
+    # One shared legend outside the plotting panels. This keeps the upper half
+    # of each equal-aspect subplot clean for visual inspection.
+    fig.legend(
+        handles=make_shared_legend_handles(),
+        loc="center left",
+        bbox_to_anchor=(0.875, 0.52),
+        fontsize=8.5,
+        frameon=True,
+        borderaxespad=0.0,
+    )
+
+    # Reserve space on the right for the shared legend and below each row for
+    # the compact diagnostic info boxes.
+    fig.subplots_adjust(
+        left=0.055,
+        right=0.845,
+        top=0.86,
+        bottom=0.075,
+        wspace=0.28,
+        hspace=0.62,
     )
 
     safe_scenario = scenario_name.replace("/", "_").replace("\\", "_")
@@ -632,13 +704,13 @@ def plot_trace_comparison(
 
     return path
 
-
 def create_actual_trace_examples(
     selected_df: pd.DataFrame,
     perf_df: pd.DataFrame,
     output_dir: Path,
     generator_seed: int,
     max_frames: int,
+    panels_per_row: int,
 ) -> pd.DataFrame:
     rows = []
 
@@ -668,6 +740,7 @@ def create_actual_trace_examples(
             runner_up=runner_up,
             output_dir=output_dir,
             max_frames=max_frames,
+            panels_per_row=panels_per_row,
         )
 
         print(f"Saved actual trace figure: {path}")
@@ -728,6 +801,13 @@ def parse_args() -> argparse.Namespace:
         help="Number of time frames per figure. Default: 4.",
     )
 
+    parser.add_argument(
+        "--panels-per-row",
+        type=int,
+        default=4,
+        help="Number of subplots per row in each trace figure. Default: 4.",
+    )
+
     return parser.parse_args()
 
 
@@ -743,6 +823,7 @@ def main() -> None:
     print(f"Output directory:   {output_dir}")
     print(f"Generator seed:     {args.generator_seed}")
     print(f"Max frames:         {args.max_frames}")
+    print(f"Panels per row:     {args.panels_per_row}")
 
     selected_df, perf_df = load_selected_examples(selected_dir)
 
@@ -752,6 +833,7 @@ def main() -> None:
         output_dir=output_dir,
         generator_seed=args.generator_seed,
         max_frames=args.max_frames,
+        panels_per_row=args.panels_per_row,
     )
 
     print("\nActual trace figure summary")
