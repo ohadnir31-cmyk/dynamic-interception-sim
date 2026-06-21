@@ -19,7 +19,7 @@ DEFAULT_CLUSTER_TIME_WINDOW = 5.0
 #
 # Main portfolio:
 #   NI       - nearest target by geometric distance
-#   FNI      - nearest feasible target by time-to-intercept
+#   FNI      - nearest feasible target by moving-target lead-intercept time
 #   FMTTB    - feasible target with minimum time-to-boundary
 #   MPS      - feasible target with minimum positive slack
 #   FCluster - leading edge of the densest local target cluster
@@ -54,17 +54,17 @@ def h_feasible_nearest(active: List[Threat], pI: np.ndarray, vI: float) -> Optio
     First filters targets that are feasible to intercept before boundary crossing:
         slack = TTB - TTI >= 0
 
-    Then selects the feasible target with the shortest time-to-intercept.
+    Then selects the feasible target with the shortest moving-target lead-intercept time.
 
     Operational principle:
-        feasibility-aware proximity.
+        feasibility-aware interceptability.
     """
     feasible = [th for th in active if slack(pI, th, vI) >= 0]
 
     if not feasible:
         return None
 
-    return min(feasible, key=lambda th: time_to_intercept(pI, th.pos, vI)).id
+    return min(feasible, key=lambda th: time_to_intercept(pI, th.pos, vI, th.vel)).id
 
 
 def h_feasible_min_ttb(active: List[Threat], pI: np.ndarray, vI: float) -> Optional[int]:
