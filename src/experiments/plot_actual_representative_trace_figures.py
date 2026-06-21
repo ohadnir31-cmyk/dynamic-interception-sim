@@ -732,9 +732,9 @@ def plot_trace_comparison(
     # Larger figure, without changing the plotting logic.
     # This gives each equal-aspect subplot more physical space,
     # while keeping the per-panel legend outside the axes.
-    fig_width = max(20.0, 10.0 * n_cols)
-    fig_height = max(6.8, 6.6 * n_rows)
-
+    fig_width = max(22.0, 11.0 * n_cols)
+    fig_height = max(7.4, 7.2 * n_rows)
+    
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
