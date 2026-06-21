@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from src.experiments.run_large_scale_rollout import make_large_scale_scenarios
-from src.sim.env import SimEnv, slack, time_to_boundary_x0, time_to_intercept
+from src.sim.env import SimEnv, predicted_intercept_point, slack, time_to_boundary_x0, time_to_intercept
 from src.sim.heuristics import DEFAULT_CLUSTER_TIME_WINDOW, make_heuristics
 
 
@@ -144,7 +144,7 @@ def snapshot_features(env: SimEnv) -> dict[str, Any]:
         }
 
     ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
-    ttis = np.array([time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor) for th in active], dtype=float)
+    ttis = np.array([time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor, th.vel) for th in active], dtype=float)
     slacks = np.array([slack(env.interceptor_pos, th, env.p.v_interceptor) for th in active], dtype=float)
     positive = slacks[slacks >= 0]
 
@@ -211,8 +211,14 @@ def trace_from_env_snapshot(
                         "pos": th.pos.copy(),
                         "vel": th.vel.copy(),
                         "ttb": float(time_to_boundary_x0(th.pos, th.vel)),
-                        "tti": float(time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor)),
+                        "tti": float(time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor, th.vel)),
                         "slack": float(slack(env.interceptor_pos, th, env.p.v_interceptor)),
+                        "intercept_point": predicted_intercept_point(
+                            env.interceptor_pos,
+                            th.pos,
+                            th.vel,
+                            env.p.v_interceptor,
+                        ).copy(),
                     }
                     for th in active_before
                 ],
@@ -428,6 +434,18 @@ def plot_frame(
 
         ax.scatter(pos[0], pos[1], s=size, color=color, edgecolor=edgecolor, linewidth=linewidth, zorder=z)
 
+        # Target id labels help debug whether a heuristic selected the correct target.
+        ax.text(
+            pos[0],
+            pos[1],
+            str(th["id"]),
+            fontsize=6.5,
+            ha="center",
+            va="center",
+            color="white" if is_chosen else "black",
+            zorder=z + 1,
+        )
+
         # Velocity direction arrow, scaled for visibility.
         speed = np.linalg.norm(vel)
         if speed > 1e-9:
@@ -458,13 +476,9 @@ def plot_frame(
 
     if chosen is not None:
         cpos = np.array(chosen["pos"], dtype=float)
-        ax.annotate(
-            "",
-            xy=(cpos[0], cpos[1]),
-            xytext=(pI[0], pI[1]),
-            arrowprops=dict(arrowstyle="->", color="#2ca02c", linewidth=1.6),
-            zorder=4,
-        )
+        lead_point = np.array(chosen.get("intercept_point", cpos), dtype=float)
+
+        # Current selected target position.
         ax.scatter(
             cpos[0],
             cpos[1],
@@ -473,6 +487,36 @@ def plot_frame(
             edgecolors="#2ca02c",
             linewidth=2.2,
             zorder=6,
+        )
+
+        # Lead-pursuit guidance: the interceptor heads toward the predicted
+        # future intercept point, not necessarily the target's current position.
+        ax.annotate(
+            "",
+            xy=(lead_point[0], lead_point[1]),
+            xytext=(pI[0], pI[1]),
+            arrowprops=dict(arrowstyle="->", color="#2ca02c", linewidth=1.6),
+            zorder=4,
+        )
+
+        ax.scatter(
+            lead_point[0],
+            lead_point[1],
+            s=55,
+            color="#2ca02c",
+            marker="x",
+            linewidth=2.0,
+            zorder=7,
+        )
+
+        ax.plot(
+            [cpos[0], lead_point[0]],
+            [cpos[1], lead_point[1]],
+            linestyle=":",
+            color="#2ca02c",
+            linewidth=1.2,
+            alpha=0.8,
+            zorder=3,
         )
 
     f = state["features"]
@@ -508,6 +552,9 @@ def plot_frame(
 
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
+    # Equal aspect ratio is important: otherwise Euclidean nearest-target
+    # decisions can look visually wrong when x and y ranges differ.
+    ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x position")
     if show_ylabel:
         ax.set_ylabel("y position")
