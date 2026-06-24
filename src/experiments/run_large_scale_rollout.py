@@ -28,6 +28,38 @@ CANDIDATE_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 DEFAULT_BEHAVIOR_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 
+# Scenario-mix weights control how often each load regime is sampled.
+#
+# baseline:
+#     The original broad distribution used in the lead-pursuit experiments.
+# decision_rich:
+#     Increases the prevalence of medium/high-load regimes where the choice
+#     between heuristics is expected to be more informative, without letting
+#     overloaded cases dominate the entire dataset.
+# heavy_load:
+#     A stronger stress-test distribution for later sensitivity experiments.
+SCENARIO_MIX_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "baseline": {
+        "low_load": 0.15,
+        "medium_load": 0.25,
+        "high_load": 0.35,
+        "overloaded": 0.25,
+    },
+    "decision_rich": {
+        "low_load": 0.05,
+        "medium_load": 0.25,
+        "high_load": 0.40,
+        "overloaded": 0.30,
+    },
+    "heavy_load": {
+        "low_load": 0.02,
+        "medium_load": 0.13,
+        "high_load": 0.35,
+        "overloaded": 0.50,
+    },
+}
+
+
 REGIME_CONFIG: Dict[str, Dict[str, Any]] = {
     "low_load": {
         "weight": 0.15,
@@ -87,9 +119,32 @@ def _weighted_choice(rng: np.random.Generator, weights_by_name: Dict[str, float]
     return str(rng.choice(names, p=weights))
 
 
+def _get_scenario_mix_weights(scenario_mix: str) -> Dict[str, float]:
+    if scenario_mix not in SCENARIO_MIX_WEIGHTS:
+        valid = ", ".join(sorted(SCENARIO_MIX_WEIGHTS))
+        raise ValueError(f"Unknown scenario_mix={scenario_mix!r}. Valid values: {valid}")
+
+    weights = dict(SCENARIO_MIX_WEIGHTS[scenario_mix])
+    missing = set(REGIME_CONFIG) - set(weights)
+    extra = set(weights) - set(REGIME_CONFIG)
+
+    if missing or extra:
+        raise ValueError(
+            "Scenario mix weights must match REGIME_CONFIG keys. "
+            f"missing={sorted(missing)}, extra={sorted(extra)}"
+        )
+
+    total = float(sum(weights.values()))
+    if total <= 0:
+        raise ValueError(f"Scenario mix {scenario_mix!r} has non-positive total weight")
+
+    return {name: float(w) / total for name, w in weights.items()}
+
+
 def make_large_scale_scenarios(
     n_scenarios: int,
     seed: int = 42,
+    scenario_mix: str = "baseline",
 ) -> Dict[str, ScenarioObj]:
     """
     Build a scenario set with enough active targets to make heuristic choice meaningful.
@@ -100,7 +155,7 @@ def make_large_scale_scenarios(
     """
 
     rng = np.random.default_rng(seed)
-    regime_weights = {name: cfg["weight"] for name, cfg in REGIME_CONFIG.items()}
+    regime_weights = _get_scenario_mix_weights(scenario_mix)
 
     scenarios: Dict[str, ScenarioObj] = {}
 
@@ -333,6 +388,17 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n-scenarios", type=int, default=20_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--scenario-mix",
+        type=str,
+        default="baseline",
+        choices=sorted(SCENARIO_MIX_WEIGHTS.keys()),
+        help=(
+            "Scenario mixture for load-regime sampling. "
+            "Use 'decision_rich' to emphasize medium/high-load states where "
+            "adaptive heuristic selection is more informative."
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default="outputs/large_scale")
     parser.add_argument("--max-states-per-run", type=int, default=8)
 
@@ -361,6 +427,8 @@ def main() -> None:
 
     print("\n=== Large-Scale Rollout Experiment ===")
     print(f"n_scenarios: {args.n_scenarios}")
+    print(f"scenario_mix: {args.scenario_mix}")
+    print(f"scenario_mix_weights: {_get_scenario_mix_weights(args.scenario_mix)}")
     print(f"candidate heuristics: {CANDIDATE_HEURISTICS}")
     print(
         "expected full heuristic rollouts: "
@@ -371,10 +439,18 @@ def main() -> None:
     scenarios = make_large_scale_scenarios(
         n_scenarios=args.n_scenarios,
         seed=args.seed,
+        scenario_mix=args.scenario_mix,
     )
 
     scenario_params = pd.DataFrame(
-        [{"scenario": name, **asdict(obj.params)} for name, obj in scenarios.items()]
+        [
+            {
+                "scenario": name,
+                "scenario_mix": args.scenario_mix,
+                **asdict(obj.params),
+            }
+            for name, obj in scenarios.items()
+        ]
     )
     scenario_params.to_csv(
         output_dir / "large_scale_scenario_params.csv",
