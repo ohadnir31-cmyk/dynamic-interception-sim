@@ -23,6 +23,13 @@ class ScenarioParams:
     v_threat_mean: float = 18.0
     v_threat_std: float = 3.0
 
+    # Lower bounds for stochastic target generation.
+    # These avoid pathological targets that almost do not move toward x=0,
+    # which create operationally meaningless TTB values in a finite-horizon
+    # simulation. Manual scenarios are not affected.
+    min_threat_speed: float = 0.05
+    min_boundary_speed: float = 0.05
+
     # Larger-experiment controls.
     initial_targets: int = 0
     arrival_process: str = "bernoulli"  # bernoulli, poisson, bursty
@@ -260,10 +267,43 @@ class SimEnv:
         return np.array([x0, y0], dtype=float)
 
     def _sample_stochastic_velocity(self) -> np.ndarray:
-        speed = max(1e-6, self.rng_speed.normal(self.p.v_threat_mean, self.p.v_threat_std))
-        theta = self.rng_angle.normal(0.0, 0.25)
+        """Sample a stochastic target velocity directed toward x=0.
 
-        vx = -speed * np.cos(theta)
+        Earlier versions sampled the speed from a normal distribution and then
+        applied max(1e-6, speed). Rare negative draws therefore became nearly
+        stationary targets with boundary_speed close to zero. Such targets are
+        mathematically valid but create huge time-to-boundary values that are
+        not meaningful for the finite-horizon experiments.
+
+        The current sampler enforces two lower bounds:
+        - total target speed is at least min_threat_speed;
+        - motion toward the protected boundary is at least min_boundary_speed.
+
+        This preserves the intended interpretation that stochastic targets move
+        toward the protected boundary, while avoiding pathological TTB outliers.
+        """
+
+        min_speed = max(float(self.p.min_threat_speed), EPS)
+        min_boundary_speed = max(float(self.p.min_boundary_speed), EPS)
+
+        # Try rejection sampling first so that typical velocities preserve the
+        # sampled speed and heading distribution.
+        for _ in range(50):
+            speed = float(self.rng_speed.normal(self.p.v_threat_mean, self.p.v_threat_std))
+            speed = max(speed, min_speed, min_boundary_speed)
+            theta = float(self.rng_angle.normal(0.0, 0.25))
+
+            vx = -speed * np.cos(theta)
+            vy = speed * np.sin(theta)
+
+            if -vx >= min_boundary_speed:
+                return np.array([vx, vy], dtype=float)
+
+        # Extremely unlikely fallback for very large sampled headings.
+        # Keep the lateral component but enforce minimum boundary progress.
+        speed = max(float(self.rng_speed.normal(self.p.v_threat_mean, self.p.v_threat_std)), min_speed, min_boundary_speed)
+        theta = float(self.rng_angle.normal(0.0, 0.25))
+        vx = -max(speed * np.cos(theta), min_boundary_speed)
         vy = speed * np.sin(theta)
 
         return np.array([vx, vy], dtype=float)
