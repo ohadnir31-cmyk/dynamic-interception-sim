@@ -27,6 +27,12 @@ CANDIDATE_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 DEFAULT_BEHAVIOR_HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
+# Stochastic targets should make meaningful progress toward the protected
+# boundary. These defaults prevent pathological nearly stationary targets that
+# produce huge finite-horizon-irrelevant TTB/slack feature values.
+DEFAULT_MIN_THREAT_SPEED = 0.05
+DEFAULT_MIN_BOUNDARY_SPEED = 0.05
+
 
 # Scenario-mix weights control how often each load regime is sampled.
 #
@@ -145,6 +151,8 @@ def make_large_scale_scenarios(
     n_scenarios: int,
     seed: int = 42,
     scenario_mix: str = "baseline",
+    min_threat_speed: float = DEFAULT_MIN_THREAT_SPEED,
+    min_boundary_speed: float = DEFAULT_MIN_BOUNDARY_SPEED,
 ) -> Dict[str, ScenarioObj]:
     """
     Build a scenario set with enough active targets to make heuristic choice meaningful.
@@ -185,6 +193,8 @@ def make_large_scale_scenarios(
             y_spawn_sigma=_sample_float(rng, cfg["y_spawn_sigma"]),
             v_threat_mean=v_mean,
             v_threat_std=_sample_float(rng, cfg["v_threat_std"]),
+            min_threat_speed=float(min_threat_speed),
+            min_boundary_speed=float(min_boundary_speed),
             initial_targets=_sample_int(rng, cfg["initial_targets"]),
             arrival_process=arrival_process,
             spatial_structure=spatial_structure,
@@ -401,6 +411,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=str, default="outputs/large_scale")
     parser.add_argument("--max-states-per-run", type=int, default=8)
+    parser.add_argument(
+        "--min-threat-speed",
+        type=float,
+        default=DEFAULT_MIN_THREAT_SPEED,
+        help=(
+            "Minimum total stochastic target speed. Prevents nearly stationary "
+            "targets that create very large time-to-boundary feature values."
+        ),
+    )
+    parser.add_argument(
+        "--min-boundary-speed",
+        type=float,
+        default=DEFAULT_MIN_BOUNDARY_SPEED,
+        help=(
+            "Minimum stochastic target speed component toward x=0. This keeps "
+            "generated targets meaningfully deadline-constrained."
+        ),
+    )
 
     parser.add_argument(
         "--state-label-scenarios",
@@ -429,6 +457,8 @@ def main() -> None:
     print(f"n_scenarios: {args.n_scenarios}")
     print(f"scenario_mix: {args.scenario_mix}")
     print(f"scenario_mix_weights: {_get_scenario_mix_weights(args.scenario_mix)}")
+    print(f"min_threat_speed: {args.min_threat_speed}")
+    print(f"min_boundary_speed: {args.min_boundary_speed}")
     print(f"candidate heuristics: {CANDIDATE_HEURISTICS}")
     print(
         "expected full heuristic rollouts: "
@@ -440,6 +470,8 @@ def main() -> None:
         n_scenarios=args.n_scenarios,
         seed=args.seed,
         scenario_mix=args.scenario_mix,
+        min_threat_speed=args.min_threat_speed,
+        min_boundary_speed=args.min_boundary_speed,
     )
 
     scenario_params = pd.DataFrame(
