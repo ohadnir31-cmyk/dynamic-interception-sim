@@ -20,6 +20,9 @@ from src.sim.heuristics import DEFAULT_CLUSTER_TIME_WINDOW, make_heuristics
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
 
+_SCENARIO_CACHE: dict[tuple[int, str, int], dict[str, Any]] = {}
+
+
 def parse_scenario_index(scenario_name: str) -> int:
     # Example: large_00248_overloaded_clustered_poisson_tight
     parts = scenario_name.split("_")
@@ -47,14 +50,45 @@ def load_selected_examples(input_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]
     return pd.read_csv(selected_path), pd.read_csv(perf_path)
 
 
-def get_scenario_params(scenario_name: str, seed: int):
+def get_scenario_params(
+    scenario_name: str,
+    seed: int,
+    scenario_mix: str = "baseline",
+    n_scenarios: int | None = None,
+    min_threat_speed: float = 0.05,
+    min_boundary_speed: float = 0.05,
+):
     scenario_index = parse_scenario_index(scenario_name)
-    scenarios = make_large_scale_scenarios(n_scenarios=scenario_index + 1, seed=seed)
+
+    # To reconstruct a scenario exactly, the plotting script must use the same
+    # large-scale generator seed and scenario mix used in the rollout experiment.
+    # For long runs, passing --n-scenarios avoids repeated partial regeneration.
+    required_n = scenario_index + 1
+    effective_n = max(required_n, int(n_scenarios)) if n_scenarios is not None else required_n
+
+    cache_key = (
+        int(seed),
+        str(scenario_mix),
+        int(effective_n),
+        float(min_threat_speed),
+        float(min_boundary_speed),
+    )
+    if cache_key not in _SCENARIO_CACHE:
+        _SCENARIO_CACHE[cache_key] = make_large_scale_scenarios(
+            n_scenarios=effective_n,
+            seed=seed,
+            scenario_mix=scenario_mix,
+            min_threat_speed=min_threat_speed,
+            min_boundary_speed=min_boundary_speed,
+        )
+
+    scenarios = _SCENARIO_CACHE[cache_key]
 
     if scenario_name not in scenarios:
         raise KeyError(
             f"Scenario {scenario_name} was not regenerated. "
-            f"Check that the large-scale generator seed is {seed}."
+            f"Check that generator seed={seed}, scenario_mix={scenario_mix!r}, "
+            f"and n_scenarios={effective_n} match the original rollout."
         )
 
     return scenarios[scenario_name].params
@@ -72,7 +106,14 @@ def parse_bool_value(value: Any) -> bool:
     return bool(value)
 
 
-def replay_behavior_to_selected_state(row: pd.Series, generator_seed: int) -> SimEnv:
+def replay_behavior_to_selected_state(
+    row: pd.Series,
+    generator_seed: int,
+    scenario_mix: str = "baseline",
+    n_scenarios: int | None = None,
+    min_threat_speed: float = 0.05,
+    min_boundary_speed: float = 0.05,
+) -> SimEnv:
     """
     Reconstruct the exact environment snapshot used by the state-labeling dataset.
 
@@ -85,7 +126,14 @@ def replay_behavior_to_selected_state(row: pd.Series, generator_seed: int) -> Si
     """
 
     scenario_name = str(row["scenario"])
-    params = get_scenario_params(scenario_name, seed=generator_seed)
+    params = get_scenario_params(
+        scenario_name,
+        seed=generator_seed,
+        scenario_mix=scenario_mix,
+        n_scenarios=n_scenarios,
+        min_threat_speed=min_threat_speed,
+        min_boundary_speed=min_boundary_speed,
+    )
 
     behavior_heuristic = str(row.get("behavior_heuristic", "NI"))
     behavior_preempt = parse_bool_value(row.get("behavior_preempt", False))
@@ -682,6 +730,7 @@ def make_shared_legend_handles() -> list[Any]:
         Line2D([0], [0], marker="o", markerfacecolor="white", markeredgecolor="#ff7f0e", linestyle="None", markersize=8, label="FCluster neighborhood"),
     ]
 
+
 def plot_trace_comparison(
     selected_for: str,
     scenario_name: str,
@@ -729,12 +778,10 @@ def plot_trace_comparison(
     n_cols = max(1, min(int(panels_per_row), n_panels))
     n_rows = int(math.ceil(n_panels / n_cols))
 
-    # Larger figure, without changing the plotting logic.
-    # This gives each equal-aspect subplot more physical space,
-    # while keeping the per-panel legend outside the axes.
-    fig_width = max(22.0, 11.0 * n_cols)
-    fig_height = max(7.4, 7.2 * n_rows)
-    
+    # Two panels per row is usually the clearest layout for manual inspection.
+    # Extra horizontal room is reserved for a per-panel legend outside each axis.
+    fig_width = max(15.5, 7.9 * n_cols)
+    fig_height = max(5.2, 5.15 * n_rows)
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
@@ -747,7 +794,6 @@ def plot_trace_comparison(
     for idx, spec in enumerate(panel_specs):
         row_idx = idx // n_cols
         col_idx = idx % n_cols
-
         plot_frame(
             ax=flat_axes[idx],
             state=spec["state"],
@@ -777,20 +823,20 @@ def plot_trace_comparison(
         y=0.985,
     )
 
-    # Slightly more aggressive use of the available page.
-    # We still leave room for the per-panel legends and diagnostic text boxes.
+    # Per-panel legends are placed outside each axis inside plot_frame().
+    # Leave enough horizontal space between panels and below each row for the
+    # compact diagnostic info boxes.
     fig.subplots_adjust(
-        left=0.045,
-        right=0.93,
-        top=0.90,
-        bottom=0.060,
-        wspace=0.58,
-        hspace=0.58,
+        left=0.055,
+        right=0.90,
+        top=0.86,
+        bottom=0.085,
+        wspace=0.72,
+        hspace=0.70,
     )
 
     safe_scenario = scenario_name.replace("/", "_").replace("\\", "_")
     path = output_dir / f"actual_trace_{selected_for}_vs_{runner_up}_{safe_scenario}.png"
-
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -801,6 +847,10 @@ def create_actual_trace_examples(
     perf_df: pd.DataFrame,
     output_dir: Path,
     generator_seed: int,
+    scenario_mix: str,
+    n_scenarios: int | None,
+    min_threat_speed: float,
+    min_boundary_speed: float,
     max_frames: int,
     panels_per_row: int,
     zoom_context_radius: float,
@@ -819,7 +869,14 @@ def create_actual_trace_examples(
         runner_up = choose_runner_up(perf_df, selected_for)
         print(f"Runner-up: {runner_up}")
 
-        env_snapshot = replay_behavior_to_selected_state(row, generator_seed=generator_seed)
+        env_snapshot = replay_behavior_to_selected_state(
+            row,
+            generator_seed=generator_seed,
+            scenario_mix=scenario_mix,
+            n_scenarios=n_scenarios,
+            min_threat_speed=min_threat_speed,
+            min_boundary_speed=min_boundary_speed,
+        )
 
         winner_result = trace_from_env_snapshot(env_snapshot, selected_for, preempt=False)
         runner_result = trace_from_env_snapshot(env_snapshot, runner_up, preempt=False)
@@ -891,6 +948,43 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--scenario-mix",
+        type=str,
+        default="baseline",
+        choices=["baseline", "decision_rich", "heavy_load"],
+        help=(
+            "Scenario mix used when the rollout scenarios were generated. "
+            "Use decision_rich for the decision-rich overnight experiments. "
+            "Default: baseline."
+        ),
+    )
+
+    parser.add_argument(
+        "--n-scenarios",
+        type=int,
+        default=None,
+        help=(
+            "Number of large-scale scenarios in the original rollout. "
+            "Optional, but recommended for long runs such as 5000. "
+            "If omitted, the script regenerates only up to each selected scenario index."
+        ),
+    )
+
+    parser.add_argument(
+        "--min-threat-speed",
+        type=float,
+        default=0.05,
+        help="Minimum stochastic target speed used in scenario regeneration.",
+    )
+
+    parser.add_argument(
+        "--min-boundary-speed",
+        type=float,
+        default=0.05,
+        help="Minimum stochastic target boundary-direction speed used in scenario regeneration.",
+    )
+
+    parser.add_argument(
         "--max-frames",
         type=int,
         default=4,
@@ -939,6 +1033,10 @@ def main() -> None:
     print(f"Selected directory: {selected_dir}")
     print(f"Output directory:   {output_dir}")
     print(f"Generator seed:     {args.generator_seed}")
+    print(f"Scenario mix:       {args.scenario_mix}")
+    print(f"n_scenarios:        {args.n_scenarios}")
+    print(f"min_threat_speed:   {args.min_threat_speed}")
+    print(f"min_boundary_speed: {args.min_boundary_speed}")
     print(f"Max frames:         {args.max_frames}")
     print(f"Panels per row:     {args.panels_per_row}")
     print(f"Zoom context radius:{args.zoom_context_radius}")
@@ -951,6 +1049,10 @@ def main() -> None:
         perf_df=perf_df,
         output_dir=output_dir,
         generator_seed=args.generator_seed,
+        scenario_mix=args.scenario_mix,
+        n_scenarios=args.n_scenarios,
+        min_threat_speed=args.min_threat_speed,
+        min_boundary_speed=args.min_boundary_speed,
         max_frames=args.max_frames,
         panels_per_row=args.panels_per_row,
         zoom_context_radius=args.zoom_context_radius,
