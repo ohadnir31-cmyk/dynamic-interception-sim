@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
-OBSERVABLE_FEATURES = [
+BASE_OBSERVABLE_FEATURES = [
     "N_active",
     "min_ttb",
     "mean_ttb",
@@ -33,6 +33,12 @@ OBSERVABLE_FEATURES = [
     "spatial_spread_x",
     "spatial_spread_y",
     "spatial_dispersion",
+]
+
+OPTIONAL_OBSERVABLE_FEATURES = [
+    "remaining_horizon",
+    "ttb_capped_count",
+    "ttb_capped_ratio",
 ]
 
 
@@ -66,8 +72,15 @@ def infer_heuristics(df: pd.DataFrame) -> list[str]:
 def validate_features(df: pd.DataFrame, features: list[str]) -> list[str]:
     missing = [f for f in features if f not in df.columns]
     if missing:
-        raise ValueError(f"Missing observable feature columns: {missing}")
+        raise ValueError(f"Missing required observable feature columns: {missing}")
     return features
+
+
+def resolve_observable_features(df: pd.DataFrame) -> list[str]:
+    """Return required observable features plus optional finite-horizon features."""
+    validate_features(df, BASE_OBSERVABLE_FEATURES)
+    optional = [f for f in OPTIONAL_OBSERVABLE_FEATURES if f in df.columns]
+    return BASE_OBSERVABLE_FEATURES + optional
 
 
 def add_active_bucket(df: pd.DataFrame) -> pd.DataFrame:
@@ -343,7 +356,7 @@ def main():
     df = load_dataset(input_dir, args.dataset_mode)
     df = add_active_bucket(df)
     heuristics = infer_heuristics(df)
-    features = validate_features(df, OBSERVABLE_FEATURES)
+    features = resolve_observable_features(df)
 
     train_df, test_df = split_by_scenario(df, args.test_size, args.random_state)
     train_df, test_df, cleaning_report = clean_feature_values(train_df, test_df, features, args.clip_abs)
