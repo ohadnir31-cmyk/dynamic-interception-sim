@@ -50,6 +50,25 @@ def _safe_stat(values: np.ndarray, fn: str) -> float:
     raise ValueError(f"Unknown stat: {fn}")
 
 
+def _remaining_horizon(env: SimEnv) -> float:
+    return max(0.0, float(env.p.horizon_T) - float(env.t))
+
+
+def _bounded_time_values(values: np.ndarray, cap: float) -> np.ndarray:
+    """Return finite, finite-horizon time values for feature extraction.
+
+    The simulator is finite-horizon. Very large TTB values caused by targets
+    that barely move toward the boundary are not operationally distinct from
+    any value larger than the remaining horizon. This helper maps inf and very
+    large finite values to the remaining-horizon cap for state-feature
+    statistics.
+    """
+    cap = max(0.0, float(cap))
+    arr = np.array(values, dtype=float)
+    arr = np.where(np.isfinite(arr), arr, cap)
+    return np.minimum(arr, cap)
+
+
 def _mean_nearest_neighbor_distance(positions: np.ndarray) -> float:
     if len(positions) <= 1:
         return np.inf
@@ -112,24 +131,32 @@ def extract_state_features(env: SimEnv) -> Dict[str, Any]:
             "count_feasible": 0,
             "count_negative_slack": 0,
             "feasible_ratio": 0.0,
+            "remaining_horizon": max(0.0, float(env.p.horizon_T) - float(env.t)),
+            "ttb_capped_count": 0,
+            "ttb_capped_ratio": 0.0,
             "cluster_index": np.inf,
             "spatial_spread_x": 0.0,
             "spatial_spread_y": 0.0,
             "spatial_dispersion": 0.0,
         }
 
-    ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
+    raw_ttbs = np.array([time_to_boundary_x0(th.pos, th.vel) for th in active], dtype=float)
     ttis = np.array(
         [time_to_intercept(env.interceptor_pos, th.pos, env.p.v_interceptor, th.vel) for th in active],
         dtype=float,
     )
-    slacks = np.array(
-        [slack(env.interceptor_pos, th, env.p.v_interceptor) for th in active],
-        dtype=float,
-    )
+
+    remaining_horizon = _remaining_horizon(env)
+    ttbs = _bounded_time_values(raw_ttbs, remaining_horizon)
+
+    # Feature-level slack is bounded by the finite remaining horizon. This is
+    # different from the raw single-target slack used inside the heuristic
+    # definitions, and is intentionally designed for learning and diagnostics.
+    slacks = ttbs - ttis
 
     feasible_mask = slacks >= 0
     positive_slacks = slacks[feasible_mask]
+    ttb_capped_mask = (~np.isfinite(raw_ttbs)) | (raw_ttbs > remaining_horizon)
 
     positions = np.array([th.pos for th in active], dtype=float)
     centroid = np.mean(positions, axis=0)
@@ -163,6 +190,9 @@ def extract_state_features(env: SimEnv) -> Dict[str, Any]:
         "count_feasible": int(np.sum(feasible_mask)),
         "count_negative_slack": int(np.sum(slacks < 0)),
         "feasible_ratio": float(np.mean(feasible_mask)),
+        "remaining_horizon": float(remaining_horizon),
+        "ttb_capped_count": int(np.sum(ttb_capped_mask)),
+        "ttb_capped_ratio": float(np.mean(ttb_capped_mask)),
         "cluster_index": _mean_nearest_neighbor_distance(positions),
         "spatial_spread_x": spatial_spread_x,
         "spatial_spread_y": spatial_spread_y,
