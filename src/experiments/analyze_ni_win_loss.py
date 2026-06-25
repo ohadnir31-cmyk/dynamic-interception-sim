@@ -11,7 +11,7 @@ import pandas as pd
 
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
-FEATURE_COLS = [
+BASE_FEATURE_COLS = [
     "N_active",
     "min_ttb",
     "mean_ttb",
@@ -30,6 +30,12 @@ FEATURE_COLS = [
     "spatial_spread_x",
     "spatial_spread_y",
     "spatial_dispersion",
+]
+
+OPTIONAL_FEATURE_COLS = [
+    "remaining_horizon",
+    "ttb_capped_count",
+    "ttb_capped_ratio",
 ]
 
 GROUP_COLUMNS = [
@@ -309,6 +315,11 @@ def pairwise_policy_summary(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("mean_future_intercepted", ascending=False)
 
 
+
+def resolved_feature_cols(df: pd.DataFrame) -> List[str]:
+    """Base feature columns plus optional finite-horizon diagnostic features."""
+    return BASE_FEATURE_COLS + [c for c in OPTIONAL_FEATURE_COLS if c in df.columns]
+
 def save_bar(
     df: pd.DataFrame,
     x_col: str,
@@ -345,7 +356,7 @@ def save_outputs(df: pd.DataFrame, output_dir: Path) -> None:
     winner_dist = winner_distribution_when_ni_loses(df)
     winner_dist.to_csv(output_dir / "winner_distribution_when_NI_loses.csv", index=False)
 
-    features = feature_comparison(df, FEATURE_COLS)
+    features = feature_comparison(df, resolved_feature_cols(df))
     features.to_csv(output_dir / "ni_loss_feature_comparison.csv", index=False)
 
     for group_col in GROUP_COLUMNS:
@@ -430,7 +441,7 @@ def main() -> None:
     print_table("Policy summary", pairwise_policy_summary(df))
     print_table("NI loss by active-target bucket", group_summary(df, "N_active_bucket"))
     print_table("Winner distribution when NI loses", winner_distribution_when_ni_loses(df))
-    print_table("Top feature shifts: NI-loss vs NI-best", feature_comparison(df, FEATURE_COLS), max_rows=12)
+    print_table("Top feature shifts: NI-loss vs NI-best", feature_comparison(df, resolved_feature_cols(df)), max_rows=12)
 
     print("\nSaved outputs:")
     for p in sorted(output_dir.glob("*")):
