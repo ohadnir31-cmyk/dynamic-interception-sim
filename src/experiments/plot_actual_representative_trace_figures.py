@@ -324,6 +324,14 @@ def choose_runner_up(perf_df: pd.DataFrame, selected_for: str) -> str:
 
 
 def pick_frame_times(trace_a: list[dict[str, Any]], trace_b: list[dict[str, Any]], max_frames: int) -> list[float]:
+    """
+    Pick representative display times shared by the winner and runner-up traces.
+
+    The default appendix layout now uses three frames instead of four. This creates
+    a 3x2 figure rather than a 4x2 figure, making each subplot larger and easier
+    to read. For the common three-frame case, avoid the exact first/last frames
+    and use early/middle/late positions that are usually more informative.
+    """
     if not trace_a:
         raise ValueError("Winner trace is empty.")
     if not trace_b:
@@ -336,7 +344,16 @@ def pick_frame_times(trace_a: list[dict[str, Any]], trace_b: list[dict[str, Any]
     if end_t <= start_t:
         return [start_t]
 
-    n = max(2, max_frames)
+    n = max(1, int(max_frames))
+
+    if n == 1:
+        return [0.5 * (start_t + end_t)]
+
+    if n == 3:
+        positions = [0.08, 0.50, 0.92]
+        return [start_t + p * (end_t - start_t) for p in positions]
+
+    # For non-default layouts, keep the old evenly-spaced behavior.
     return np.linspace(start_t, end_t, n).tolist()
 
 
@@ -527,6 +544,8 @@ def plot_frame(
     ylim: tuple[float, float],
     is_winner: bool,
     show_ylabel: bool,
+    info_box: str = "inside",
+    show_legend: bool = False,
 ) -> None:
     # Penetration region
     ax.axvspan(xlim[0], 0, color="#ffdddd", alpha=0.45, zorder=0)
@@ -675,20 +694,45 @@ def plot_frame(
         f"future I/E so far = {state['intercepted_so_far']} / {state['escaped_so_far']}"
     )
 
-    # Keep the diagnostic info outside the plotting area.
-    # This avoids hiding targets after ax.set_aspect("equal").
-    info_compact = " | ".join(info.splitlines())
-    ax.text(
-        0.5,
-        -0.20,
-        info_compact,
-        transform=ax.transAxes,
-        va="top",
-        ha="center",
-        fontsize=7.2,
-        bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="gray", alpha=0.95),
-        clip_on=False,
+    # Compact diagnostics. The default is to place the box inside the axes so
+    # that rows can be closer together and the data panels can be larger.
+    # Use --info-box outside to restore the old outside placement if needed.
+    info_compact = (
+        f"t={state['t']:.2f} | N={f.get('N_active', len(active))} | "
+        f"min TTB={fmt(f.get('min_ttb'))}\n"
+        f"min slack={fmt(f.get('min_slack'))} | "
+        f"min +slack={fmt(f.get('min_positive_slack'))}"
+        f"{(' | cluster=' + str(frontier_cluster_size(state))) if policy_name == 'FCluster' else ''}\n"
+        f"I/E so far={state['intercepted_so_far']}/{state['escaped_so_far']}"
     )
+
+    if info_box == "inside":
+        ax.text(
+            0.02,
+            0.02,
+            info_compact,
+            transform=ax.transAxes,
+            va="bottom",
+            ha="left",
+            fontsize=7.4,
+            bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="gray", alpha=0.88),
+            clip_on=False,
+            zorder=20,
+        )
+    elif info_box == "outside":
+        ax.text(
+            0.5,
+            -0.20,
+            " | ".join(info.splitlines()),
+            transform=ax.transAxes,
+            va="top",
+            ha="center",
+            fontsize=7.2,
+            bbox=dict(boxstyle="round,pad=0.22", facecolor="white", edgecolor="gray", alpha=0.95),
+            clip_on=False,
+        )
+    elif info_box != "none":
+        raise ValueError(f"Unknown info_box mode: {info_box!r}")
 
     title_prefix = "WINNER" if is_winner else "RUNNER-UP"
     ax.set_title(f"{title_prefix}: {policy_name} | frame t={state['t']:.2f}", fontsize=11)
@@ -703,17 +747,17 @@ def plot_frame(
         ax.set_ylabel("y position")
     ax.grid(alpha=0.25)
 
-    # Separate legend for every panel, outside the plotted area and adjacent to it.
-    # This is intentionally not a central legend, because manual inspection is
-    # easier when each subplot is self-contained.
-    ax.legend(
-        handles=make_shared_legend_handles(),
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1.00),
-        fontsize=7.0,
-        frameon=True,
-        borderaxespad=0.0,
-    )
+    if show_legend:
+        # Optional legacy per-panel legend. The default trace figure now uses a
+        # single shared legend to avoid large white gaps between panels.
+        ax.legend(
+            handles=make_shared_legend_handles(),
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.00),
+            fontsize=7.0,
+            frameon=True,
+            borderaxespad=0.0,
+        )
 
 
 def make_shared_legend_handles() -> list[Any]:
@@ -744,6 +788,9 @@ def plot_trace_comparison(
     panels_per_row: int = 2,
     zoom_context_radius: float = 12.0,
     max_left_penetration: float = 3.0,
+    info_box: str = "inside",
+    shared_legend: bool = True,
+    per_panel_legends: bool = False,
 ) -> Path:
     frame_times = pick_frame_times(winner_trace, runner_trace, max_frames=max_frames)
     xlim, ylim = collect_plot_limits(
@@ -779,9 +826,16 @@ def plot_trace_comparison(
     n_rows = int(math.ceil(n_panels / n_cols))
 
     # Two panels per row is usually the clearest layout for manual inspection.
-    # Extra horizontal room is reserved for a per-panel legend outside each axis.
-    fig_width = max(15.5, 7.9 * n_cols)
-    fig_height = max(5.2, 5.15 * n_rows)
+    # The default output uses three time points, one shared legend, and compact
+    # in-axis diagnostics. This makes the panels much larger than the old 4x2
+    # layout with repeated per-panel legends.
+    if per_panel_legends:
+        fig_width = max(15.5, 7.9 * n_cols)
+        fig_height = max(5.2, 5.15 * n_rows)
+    else:
+        fig_width = max(13.2, 6.45 * n_cols)
+        fig_height = max(4.4, 4.15 * n_rows)
+
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
@@ -804,6 +858,8 @@ def plot_trace_comparison(
             ylim=ylim,
             is_winner=spec["is_winner"],
             show_ylabel=(col_idx == 0),
+            info_box=info_box,
+            show_legend=per_panel_legends,
         )
 
     for ax in flat_axes[n_panels:]:
@@ -823,17 +879,36 @@ def plot_trace_comparison(
         y=0.985,
     )
 
-    # Per-panel legends are placed outside each axis inside plot_frame().
-    # Leave enough horizontal space between panels and below each row for the
-    # compact diagnostic info boxes.
-    fig.subplots_adjust(
-        left=0.055,
-        right=0.90,
-        top=0.86,
-        bottom=0.085,
-        wspace=0.72,
-        hspace=0.70,
-    )
+    if shared_legend and not per_panel_legends:
+        fig.legend(
+            handles=make_shared_legend_handles(),
+            loc="lower center",
+            ncol=5,
+            fontsize=7.8,
+            frameon=True,
+            bbox_to_anchor=(0.5, 0.012),
+        )
+
+    if per_panel_legends:
+        # Legacy spacing for optional per-panel legends.
+        fig.subplots_adjust(
+            left=0.055,
+            right=0.90,
+            top=0.86,
+            bottom=0.085,
+            wspace=0.72,
+            hspace=0.70 if info_box == "outside" else 0.38,
+        )
+    else:
+        # Clear appendix default: fewer frames, shared legend, little white space.
+        fig.subplots_adjust(
+            left=0.060,
+            right=0.985,
+            top=0.865,
+            bottom=0.095 if shared_legend else 0.055,
+            wspace=0.12,
+            hspace=0.32 if info_box != "outside" else 0.62,
+        )
 
     safe_scenario = scenario_name.replace("/", "_").replace("\\", "_")
     path = output_dir / f"actual_trace_{selected_for}_vs_{runner_up}_{safe_scenario}.png"
@@ -855,6 +930,9 @@ def create_actual_trace_examples(
     panels_per_row: int,
     zoom_context_radius: float,
     max_left_penetration: float,
+    info_box: str,
+    shared_legend: bool,
+    per_panel_legends: bool,
 ) -> pd.DataFrame:
     rows = []
 
@@ -894,6 +972,9 @@ def create_actual_trace_examples(
             panels_per_row=panels_per_row,
             zoom_context_radius=zoom_context_radius,
             max_left_penetration=max_left_penetration,
+            info_box=info_box,
+            shared_legend=shared_legend,
+            per_panel_legends=per_panel_legends,
         )
 
         print(f"Saved actual trace figure: {path}")
@@ -987,8 +1068,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=4,
-        help="Number of time frames per figure. Default: 4.",
+        default=3,
+        help=(
+            "Number of displayed time frames per trace figure. "
+            "Default: 3, producing a clearer 3x2 appendix figure. "
+            "Use 4 to reproduce the older 4x2 layout."
+        ),
     )
 
     parser.add_argument(
@@ -1019,6 +1104,33 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--info-box",
+        type=str,
+        default="inside",
+        choices=["inside", "outside", "none"],
+        help=(
+            "Where to place compact per-panel diagnostics. "
+            "Default: inside, which reduces white space and makes panels larger. "
+            "Use outside to restore the older outside text box style."
+        ),
+    )
+
+    parser.add_argument(
+        "--per-panel-legends",
+        action="store_true",
+        help=(
+            "Use the older repeated per-panel legends. By default, the script uses "
+            "one shared legend for the whole figure to reduce white space."
+        ),
+    )
+
+    parser.add_argument(
+        "--no-shared-legend",
+        action="store_true",
+        help="Do not draw a shared figure-level legend.",
+    )
+
     return parser.parse_args()
 
 
@@ -1041,6 +1153,9 @@ def main() -> None:
     print(f"Panels per row:     {args.panels_per_row}")
     print(f"Zoom context radius:{args.zoom_context_radius}")
     print(f"Max left x<0 span:  {args.max_left_penetration}")
+    print(f"Info box:           {args.info_box}")
+    print(f"Shared legend:      {not args.no_shared_legend}")
+    print(f"Per-panel legends:  {args.per_panel_legends}")
 
     selected_df, perf_df = load_selected_examples(selected_dir)
 
@@ -1057,6 +1172,9 @@ def main() -> None:
         panels_per_row=args.panels_per_row,
         zoom_context_radius=args.zoom_context_radius,
         max_left_penetration=args.max_left_penetration,
+        info_box=args.info_box,
+        shared_legend=not args.no_shared_legend,
+        per_panel_legends=args.per_panel_legends,
     )
 
     print("\nActual trace figure summary")
