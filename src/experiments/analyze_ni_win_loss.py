@@ -8,8 +8,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.experiments.heuristic_display import display_heuristic_name
+
 
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
+BASELINE_INTERNAL = "NI"
+BASELINE_DISPLAY = display_heuristic_name(BASELINE_INTERNAL)
 
 BASE_FEATURE_COLS = [
     "N_active",
@@ -332,10 +336,11 @@ def save_bar(
         return
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar(df[x_col].astype(str), df[y_col].astype(float))
-    ax.set_title(title)
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
+    x_labels = df[x_col].astype(str).map(display_heuristic_name) if x_col == "winner" else df[x_col].astype(str)
+    ax.bar(x_labels, df[y_col].astype(float))
+    ax.set_title(title.replace("NI", BASELINE_DISPLAY))
+    ax.set_xlabel(x_col.replace("NI", BASELINE_DISPLAY))
+    ax.set_ylabel(y_col.replace("NI", BASELINE_DISPLAY))
     ax.grid(axis="y", alpha=0.25)
     if rotate:
         ax.tick_params(axis="x", rotation=35)
@@ -370,7 +375,7 @@ def save_outputs(df: pd.DataFrame, output_dir: Path) -> None:
         by_bucket,
         x_col="N_active_bucket",
         y_col="NI_loss_rate",
-        title="NI loss rate by active-target bucket",
+        title=f"{BASELINE_DISPLAY} loss rate by active-target bucket",
         output_path=output_dir / "ni_loss_rate_by_active_bucket.png",
     )
 
@@ -378,7 +383,7 @@ def save_outputs(df: pd.DataFrame, output_dir: Path) -> None:
         by_bucket,
         x_col="N_active_bucket",
         y_col="mean_NI_regret",
-        title="Mean NI regret by active-target bucket",
+        title=f"Mean {BASELINE_DISPLAY} regret by active-target bucket",
         output_path=output_dir / "mean_NI_regret_by_active_bucket.png",
     )
 
@@ -386,7 +391,7 @@ def save_outputs(df: pd.DataFrame, output_dir: Path) -> None:
         winner_dist,
         x_col="winner",
         y_col="rows",
-        title="Which heuristic wins when NI loses",
+        title=f"Which heuristic wins when {BASELINE_DISPLAY} loses",
         output_path=output_dir / "winner_distribution_when_NI_loses.png",
     )
 
@@ -397,7 +402,7 @@ def save_outputs(df: pd.DataFrame, output_dir: Path) -> None:
             top_features,
             x_col="feature",
             y_col="standardized_delta_loss_vs_best",
-            title="Feature shift: NI-loss states vs NI-best states",
+            title=f"Feature shift: {BASELINE_DISPLAY}-loss states vs {BASELINE_DISPLAY}-best states",
             output_path=output_dir / "ni_loss_feature_shift_top12.png",
             rotate=True,
         )
@@ -430,18 +435,18 @@ def main() -> None:
 
     save_outputs(df, output_dir)
 
-    print("\n=== NI Win/Loss Analysis ===")
+    print(f"\n=== {BASELINE_DISPLAY} Win/Loss Analysis ===")
     print(f"Input dir:      {input_dir}")
     print(f"Output dir:     {output_dir}")
     print(f"Dataset mode:   {args.dataset_mode}")
     print(f"Rows analyzed:  {len(df)}")
-    print(f"Strong loss threshold: NI_regret >= {args.strong_loss_threshold}")
+    print(f"Strong loss threshold: {BASELINE_DISPLAY}_regret >= {args.strong_loss_threshold} (internal column: NI_regret)")
 
     print_table("Overall", summarize_overall(df))
     print_table("Policy summary", pairwise_policy_summary(df))
-    print_table("NI loss by active-target bucket", group_summary(df, "N_active_bucket"))
-    print_table("Winner distribution when NI loses", winner_distribution_when_ni_loses(df))
-    print_table("Top feature shifts: NI-loss vs NI-best", feature_comparison(df, resolved_feature_cols(df)), max_rows=12)
+    print_table(f"{BASELINE_DISPLAY} loss by active-target bucket", group_summary(df, "N_active_bucket"))
+    print_table(f"Winner distribution when {BASELINE_DISPLAY} loses", winner_distribution_when_ni_loses(df))
+    print_table(f"Top feature shifts: {BASELINE_DISPLAY}-loss vs {BASELINE_DISPLAY}-best", feature_comparison(df, resolved_feature_cols(df)), max_rows=12)
 
     print("\nSaved outputs:")
     for p in sorted(output_dir.glob("*")):
