@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from src.experiments.heuristic_display import display_heuristic_name, display_policy_name
+
 
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
 
@@ -151,7 +153,7 @@ def build_long_table(df: pd.DataFrame, heuristics: list[str]) -> tuple[pd.DataFr
         parts.append(
             add_policy_rows(
                 source_df=df,
-                policy=f"Always {h}",
+                policy=f"Always {display_heuristic_name(h)}",
                 policy_type="fixed",
                 future_intercepted=df[f"{h}_future_intercepted"],
                 regret=df[f"{h}_regret"],
@@ -162,7 +164,7 @@ def build_long_table(df: pd.DataFrame, heuristics: list[str]) -> tuple[pd.DataFr
 
     long_df = pd.concat(parts, ignore_index=True)
 
-    policy_order = ["Oracle", "Learned selector"] + [f"Always {h}" for h in heuristics]
+    policy_order = ["Oracle", "Learned selector"] + [f"Always {display_heuristic_name(h)}" for h in heuristics]
     order_map = {policy: i for i, policy in enumerate(policy_order)}
     long_df["policy_order"] = long_df["policy"].map(order_map)
 
@@ -265,7 +267,7 @@ def plot_bar(summary: pd.DataFrame, metric: str, title: str, ylabel: str, path: 
     plot_df = plot_df.sort_values(metric, ascending=False)
 
     plt.figure(figsize=(10, 5))
-    plt.bar(plot_df["policy"], plot_df[metric])
+    plt.bar(plot_df["policy"].map(display_policy_name), plot_df[metric])
     plt.xlabel("Policy")
     plt.ylabel(ylabel)
     plt.title(title)
