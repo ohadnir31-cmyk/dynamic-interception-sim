@@ -18,7 +18,7 @@ DEFAULT_CLUSTER_TIME_WINDOW = 5.0
 # ============================================================
 #
 # Main portfolio:
-#   NI       - nearest target by geometric distance
+#   NT       - nearest target by geometric distance
 #   FNI      - nearest feasible target by moving-target lead-intercept time
 #   FMTTB    - feasible target with minimum time-to-boundary
 #   MPS      - feasible target with minimum positive slack
@@ -34,7 +34,7 @@ DEFAULT_CLUSTER_TIME_WINDOW = 5.0
 
 def h_nearest(active: List[Threat], pI: np.ndarray, vI: float) -> Optional[int]:
     """
-    NI - Nearest Intercept / nearest target.
+    NT - Nearest Target.
 
     Selects the active target that is geographically closest to the interceptor.
     This is the simplest proximity-based baseline.
@@ -184,6 +184,9 @@ def make_heuristics(seed: int = 0) -> Dict[str, HeuristicFn]:
     """
 
     return {
+        # NT is the current name used in proposal figures and future outputs.
+        # NI is kept as a backwards-compatible alias for datasets generated before the rename.
+        "NT": h_nearest,
         "NI": h_nearest,
         "FNI": h_feasible_nearest,
         "FMTTB": h_feasible_min_ttb,
