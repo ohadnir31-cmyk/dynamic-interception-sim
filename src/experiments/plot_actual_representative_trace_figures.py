@@ -13,11 +13,12 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from src.experiments.run_large_scale_rollout import make_large_scale_scenarios
+from src.experiments.heuristic_display import display_heuristic_name, internal_heuristic_name
 from src.sim.env import SimEnv, predicted_intercept_point, slack, time_to_boundary_x0, time_to_intercept
 from src.sim.heuristics import DEFAULT_CLUSTER_TIME_WINDOW, make_heuristics
 
 
-HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
+HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]  # internal keys; display maps NI -> NT
 
 
 _SCENARIO_CACHE: dict[tuple[int, str, int], dict[str, Any]] = {}
@@ -135,7 +136,7 @@ def replay_behavior_to_selected_state(
         min_boundary_speed=min_boundary_speed,
     )
 
-    behavior_heuristic = str(row.get("behavior_heuristic", "NI"))
+    behavior_heuristic = internal_heuristic_name(row.get("behavior_heuristic", "NI"))
     behavior_preempt = parse_bool_value(row.get("behavior_preempt", False))
     target_state_id = int(row.get("state_id", 0))
 
@@ -231,6 +232,8 @@ def trace_from_env_snapshot(
     env = copy.deepcopy(env_snapshot)
     heuristic_map = make_heuristics(seed=env.p.seed)
 
+    heuristic_name = internal_heuristic_name(heuristic_name)
+
     if heuristic_name not in heuristic_map:
         raise KeyError(f"Unknown heuristic: {heuristic_name}")
 
@@ -305,7 +308,8 @@ def trace_from_env_snapshot(
 
 
 def choose_runner_up(perf_df: pd.DataFrame, selected_for: str) -> str:
-    g = perf_df[perf_df["selected_for"] == selected_for].copy()
+    selected_internal = internal_heuristic_name(selected_for)
+    g = perf_df[perf_df["selected_for"].map(internal_heuristic_name) == selected_internal].copy()
 
     if g.empty:
         raise ValueError(f"No performance rows for selected_for={selected_for}")
@@ -316,8 +320,8 @@ def choose_runner_up(perf_df: pd.DataFrame, selected_for: str) -> str:
     )
 
     for _, row in g.iterrows():
-        h = str(row["heuristic"])
-        if h != selected_for:
+        h = internal_heuristic_name(row["heuristic"])
+        if h != selected_internal:
             return h
 
     raise ValueError(f"Could not determine runner-up for {selected_for}")
@@ -735,7 +739,7 @@ def plot_frame(
         raise ValueError(f"Unknown info_box mode: {info_box!r}")
 
     title_prefix = "WINNER" if is_winner else "RUNNER-UP"
-    ax.set_title(f"{title_prefix}: {policy_name} | frame t={state['t']:.2f}", fontsize=11)
+    ax.set_title(f"{title_prefix}: {display_heuristic_name(policy_name)} | frame t={state['t']:.2f}", fontsize=11)
 
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -865,13 +869,16 @@ def plot_trace_comparison(
     for ax in flat_axes[n_panels:]:
         ax.axis("off")
 
+    selected_display = display_heuristic_name(selected_for)
+    runner_display = display_heuristic_name(runner_up)
+
     fig.suptitle(
         (
-            f"Actual rollout from selected state: {selected_for} vs {runner_up}\n"
+            f"Actual rollout from selected state: {selected_display} vs {runner_display}\n"
             f"{scenario_name}\n"
-            f"{selected_for}: {winner_summary['future_intercepted']} intercepted, "
+            f"{selected_display}: {winner_summary['future_intercepted']} intercepted, "
             f"{winner_summary['future_escaped']} escaped | "
-            f"{runner_up}: {runner_summary['future_intercepted']} intercepted, "
+            f"{runner_display}: {runner_summary['future_intercepted']} intercepted, "
             f"{runner_summary['future_escaped']} escaped"
         ),
         fontsize=15,
@@ -911,7 +918,7 @@ def plot_trace_comparison(
         )
 
     safe_scenario = scenario_name.replace("/", "_").replace("\\", "_")
-    path = output_dir / f"actual_trace_{selected_for}_vs_{runner_up}_{safe_scenario}.png"
+    path = output_dir / f"actual_trace_{display_heuristic_name(selected_for)}_vs_{display_heuristic_name(runner_up)}_{safe_scenario}.png"
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -937,15 +944,15 @@ def create_actual_trace_examples(
     rows = []
 
     for _, row in selected_df.iterrows():
-        selected_for = str(row["selected_for"])
+        selected_for = internal_heuristic_name(row["selected_for"])
         scenario_name = str(row["scenario"])
 
         print("=" * 90)
-        print(f"Selected heuristic: {selected_for}")
+        print(f"Selected heuristic: {display_heuristic_name(selected_for)}")
         print(f"Scenario: {scenario_name}")
 
         runner_up = choose_runner_up(perf_df, selected_for)
-        print(f"Runner-up: {runner_up}")
+        print(f"Runner-up: {display_heuristic_name(runner_up)}")
 
         env_snapshot = replay_behavior_to_selected_state(
             row,
@@ -981,9 +988,9 @@ def create_actual_trace_examples(
 
         rows.append(
             {
-                "selected_for": selected_for,
+                "selected_for": display_heuristic_name(selected_for),
                 "scenario": scenario_name,
-                "runner_up": runner_up,
+                "runner_up": display_heuristic_name(runner_up),
                 "start_t": winner_result["summary"]["start_t"],
                 "winner_future_intercepted": winner_result["summary"]["future_intercepted"],
                 "winner_future_escaped": winner_result["summary"]["future_escaped"],
