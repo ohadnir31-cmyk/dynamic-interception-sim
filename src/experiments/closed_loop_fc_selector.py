@@ -67,7 +67,7 @@ DISPLAY_NAME: Dict[str, str] = {
     "FCluster": "FCluster",
 }
 
-MODEL_SCHEMA_VERSION = 2
+MODEL_SCHEMA_VERSION = 3
 
 
 def display_heuristic_name(name: str) -> str:
@@ -119,6 +119,103 @@ def resolve_feature_columns(df: pd.DataFrame) -> List[str]:
         raise ValueError(f"Missing required observable feature columns: {missing}")
     optional = [f for f in OPTIONAL_OBSERVABLE_FEATURES if f in df.columns]
     return list(BASE_OBSERVABLE_FEATURES) + optional
+
+
+def preprocess_rollout_dataset(
+    df: pd.DataFrame,
+    *,
+    deduplicate_initial_states: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Apply lightweight, explicit preprocessing before model fitting.
+
+    The decision-epoch generator runs one behavior trajectory per heuristic.
+    Before any behavior action is taken, those trajectories share the same
+    initial state.  Keeping that row five times gives the initial condition an
+    artificial weight.  When the required metadata columns are available, this
+    function retains one ``initial`` row per scenario and leaves all later
+    behavior-dependent states untouched.
+
+    The function never silently changes historical datasets that lack the
+    ``decision_epoch_reason`` column.  A compact report is returned alongside
+    the processed dataframe so every experiment records what was removed.
+    """
+
+    prepared = df.copy()
+    input_rows = int(len(prepared))
+    initial_rows_before = 0
+    initial_rows_after = 0
+    removed = 0
+    applied = False
+    reason = "disabled"
+
+    if deduplicate_initial_states:
+        required = {"scenario", "decision_epoch_reason"}
+        if required.issubset(prepared.columns):
+            applied = True
+            reason = "one initial decision epoch retained per scenario"
+            initial_mask = prepared["decision_epoch_reason"].astype(str).eq("initial")
+            initial_rows_before = int(initial_mask.sum())
+
+            initial_rows = prepared.loc[initial_mask].copy()
+            non_initial_rows = prepared.loc[~initial_mask].copy()
+
+            if not initial_rows.empty:
+                # Stable sorting makes the retained behavior deterministic.
+                sort_columns = ["scenario"]
+                if "behavior_heuristic" in initial_rows.columns:
+                    behavior_order = {
+                        heuristic: index
+                        for index, heuristic in enumerate(DEFAULT_CANDIDATE_HEURISTICS)
+                    }
+                    initial_rows["_behavior_order"] = (
+                        initial_rows["behavior_heuristic"]
+                        .map(behavior_order)
+                        .fillna(len(behavior_order))
+                    )
+                    sort_columns.append("_behavior_order")
+
+                initial_rows = (
+                    initial_rows.sort_values(sort_columns, kind="stable")
+                    .drop_duplicates(subset=["scenario"], keep="first")
+                    .drop(columns=["_behavior_order"], errors="ignore")
+                )
+
+            initial_rows_after = int(len(initial_rows))
+            removed = initial_rows_before - initial_rows_after
+            prepared = pd.concat(
+                [non_initial_rows, initial_rows],
+                ignore_index=True,
+                sort=False,
+            )
+            # Restore a deterministic order suitable for reproducibility.
+            order_columns = [column for column in ["scenario", "t", "state_id"] if column in prepared.columns]
+            if order_columns:
+                prepared = prepared.sort_values(order_columns, kind="stable").reset_index(drop=True)
+        else:
+            reason = (
+                "not applied: dataset lacks scenario and/or decision_epoch_reason"
+            )
+
+    report = pd.DataFrame(
+        [
+            {
+                "deduplicate_initial_states_requested": bool(
+                    deduplicate_initial_states
+                ),
+                "deduplication_applied": bool(applied),
+                "reason": reason,
+                "input_rows": input_rows,
+                "output_rows": int(len(prepared)),
+                "initial_rows_before": int(initial_rows_before),
+                "initial_rows_after": int(initial_rows_after),
+                "rows_removed": int(removed),
+                "scenarios": int(prepared["scenario"].nunique())
+                if "scenario" in prepared.columns
+                else np.nan,
+            }
+        ]
+    )
+    return prepared, report
 
 
 def _clean_full_dataset(
@@ -238,7 +335,8 @@ class FixedContinuationRegretSelector:
     candidate_heuristics: Sequence[str]
     clip_abs: float = 1_000_000.0
     regret_threshold: float = 0.0
-    threshold_mode: str = "nt_override"
+    threshold_mode: str = "baseline_override"
+    baseline_heuristic: str = "NI"
     name: str = "Adaptive mu_FC selector"
 
     def __post_init__(self) -> None:
@@ -248,7 +346,20 @@ class FixedContinuationRegretSelector:
             raise ValueError(f"Missing fitted regret models: {missing}")
 
         self.regret_threshold = max(0.0, float(self.regret_threshold))
-        allowed_modes = {"none", "nt_override", "previous"}
+        self.baseline_heuristic = canonical_code_name(self.baseline_heuristic)
+        if (
+            self.baseline_heuristic == "NI"
+            and "NI" not in self.candidate_heuristics
+            and "NT" in self.candidate_heuristics
+        ):
+            self.baseline_heuristic = "NT"
+        if self.baseline_heuristic not in self.candidate_heuristics:
+            raise ValueError(
+                f"baseline_heuristic={self.baseline_heuristic!r} is not in "
+                f"candidate_heuristics={self.candidate_heuristics}."
+            )
+
+        allowed_modes = {"none", "baseline_override", "nt_override", "previous"}
         if self.threshold_mode not in allowed_modes:
             raise ValueError(
                 f"Unknown threshold_mode={self.threshold_mode!r}. "
@@ -295,11 +406,14 @@ class FixedContinuationRegretSelector:
     ) -> Dict[str, Any]:
         """Choose among heuristics that currently propose a valid target.
 
-        ``nt_override`` is the recommended conservative mode: an alternative is
-        used only when its predicted regret is lower than NT's by at least
-        ``regret_threshold``. ``previous`` provides hysteresis relative to the
-        heuristic used in the preceding pursuit. ``none`` always chooses the
-        valid heuristic with minimum predicted regret.
+        ``baseline_override`` is the recommended conservative mode: an
+        alternative is used only when its predicted regret is lower than the
+        configured validation-selected fixed baseline by at least
+        ``regret_threshold``. ``nt_override`` is retained as a backwards-
+        compatible alias that forces NT as the baseline. ``previous`` provides
+        hysteresis relative to the heuristic used in the preceding pursuit.
+        ``none`` always chooses the valid heuristic with minimum predicted
+        regret.
         """
         predicted = self.predicted_regrets(env)
         proposals = proposed_targets_by_heuristic(env, self.candidate_heuristics)
@@ -319,7 +433,15 @@ class FixedContinuationRegretSelector:
         )
 
         baseline = best
-        if self.threshold_mode == "nt_override":
+        if self.threshold_mode == "baseline_override":
+            configured = canonical_code_name(self.baseline_heuristic)
+            if configured in valid:
+                baseline = configured
+            elif "NI" in valid:
+                baseline = "NI"
+            elif "NT" in valid:
+                baseline = "NT"
+        elif self.threshold_mode == "nt_override":
             baseline = "NI" if "NI" in valid else ("NT" if "NT" in valid else best)
         elif self.threshold_mode == "previous":
             previous = canonical_code_name(previous_heuristic) if previous_heuristic else None
@@ -346,6 +468,7 @@ class FixedContinuationRegretSelector:
             "predicted_improvement_over_baseline": improvement,
             "regret_threshold": float(self.regret_threshold),
             "threshold_mode": self.threshold_mode,
+                "configured_baseline_heuristic": self.baseline_heuristic,
             "threshold_blocked": bool(threshold_blocked),
             "predicted_regrets": predicted,
             "proposed_targets": proposals,
@@ -377,6 +500,7 @@ class FixedContinuationRegretSelector:
                 "clip_abs": float(self.clip_abs),
                 "regret_threshold": float(self.regret_threshold),
                 "threshold_mode": self.threshold_mode,
+                "baseline_heuristic": self.baseline_heuristic,
                 "name": self.name,
                 "metadata": dict(metadata or {}),
             },
@@ -387,10 +511,10 @@ class FixedContinuationRegretSelector:
     def load(cls, path: Path) -> tuple["FixedContinuationRegretSelector", Dict[str, Any]]:
         bundle = joblib.load(Path(path))
         version = int(bundle.get("schema_version", 1))
-        if version not in {1, MODEL_SCHEMA_VERSION}:
+        if version not in {1, 2, MODEL_SCHEMA_VERSION}:
             raise ValueError(
                 f"Unsupported selector bundle schema {version}; "
-                f"expected 1 or {MODEL_SCHEMA_VERSION}."
+                f"expected 1, 2, or {MODEL_SCHEMA_VERSION}."
             )
         selector = cls(
             models=bundle["models"],
@@ -400,6 +524,7 @@ class FixedContinuationRegretSelector:
             clip_abs=float(bundle.get("clip_abs", 1_000_000.0)),
             regret_threshold=float(bundle.get("regret_threshold", 0.0)),
             threshold_mode=str(bundle.get("threshold_mode", "nt_override")),
+            baseline_heuristic=str(bundle.get("baseline_heuristic", "NI")),
             name=str(bundle.get("name", "Adaptive mu_FC selector")),
         )
         return selector, dict(bundle.get("metadata", {}))
@@ -414,13 +539,14 @@ class TrainingArtifacts:
     validation_predictions: pd.DataFrame
     validation_cleaning_report: pd.DataFrame
     full_cleaning_report: pd.DataFrame
+    preprocessing_report: pd.DataFrame
     metadata: Dict[str, Any]
 
 
-def train_mu_fc_from_existing_dataset(
-    input_dir: Path,
+def train_mu_fc_from_dataframe(
+    df: pd.DataFrame,
     *,
-    dataset_mode: str = "no_ties",
+    dataset_mode: str = "with_ties",
     validation_size: float = 0.25,
     random_state: int = 42,
     sample_weight_mode: str = "margin",
@@ -429,18 +555,42 @@ def train_mu_fc_from_existing_dataset(
     n_estimators: int = 400,
     min_samples_leaf: int = 5,
     max_depth: Optional[int] = None,
+    deduplicate_initial_states: bool = True,
+    scenario_subset: Optional[Sequence[str]] = None,
+    source_description: str = "in-memory rollout dataframe",
 ) -> TrainingArtifacts:
-    """Train ``mu_FC`` using the already generated fixed-continuation data.
+    """Train ``mu_FC`` from a fixed-continuation rollout dataframe.
 
     A scenario-level split is used for an honest internal validation.  After
-    validation, the final selector is refitted on the complete existing
-    dataset.  No Always-NT continuation stage and no new counterfactual rollout
-    generation are performed here.
+    validation, the final selector is refitted on all rows in the selected
+    scenario subset.  This function is intentionally reusable by the learning-
+    curve experiment, which fits nested 100/250/500-scenario models from one
+    generated dataset.
     """
 
-    df = add_active_bucket(load_dataset(Path(input_dir), dataset_mode))
+    if df.empty:
+        raise ValueError("Cannot train mu_FC from an empty dataframe.")
+
+    prepared, preprocessing_report = preprocess_rollout_dataset(
+        df,
+        deduplicate_initial_states=deduplicate_initial_states,
+    )
+    if scenario_subset is not None:
+        requested = {str(value) for value in scenario_subset}
+        prepared = prepared[prepared["scenario"].astype(str).isin(requested)].copy()
+        if prepared.empty:
+            raise ValueError("The requested scenario subset contains no dataset rows.")
+
+    df = add_active_bucket(prepared)
     heuristics = infer_dataset_heuristics(df)
     features = resolve_feature_columns(df)
+
+    scenario_count = int(df["scenario"].nunique())
+    if scenario_count < 2:
+        raise ValueError(
+            "At least two independent scenarios are required for a scenario-level "
+            "validation split."
+        )
 
     train_df, validation_df = split_by_scenario(
         df,
@@ -522,12 +672,15 @@ def train_mu_fc_from_existing_dataset(
         medians=full_medians,
         candidate_heuristics=heuristics,
         clip_abs=float(clip_abs),
+        threshold_mode="none",
+        baseline_heuristic="NI" if "NI" in heuristics else heuristics[0],
     )
 
     metadata: Dict[str, Any] = {
+        "source_description": source_description,
         "dataset_mode": dataset_mode,
         "rows": int(len(df)),
-        "scenarios": int(df["scenario"].nunique()),
+        "scenarios": scenario_count,
         "validation_size": float(validation_size),
         "random_state": int(random_state),
         "sample_weight_mode": sample_weight_mode,
@@ -541,6 +694,10 @@ def train_mu_fc_from_existing_dataset(
         "deployment_semantics": (
             "closed-loop reselection after selected target is intercepted or crosses"
         ),
+        "deduplicate_initial_states": bool(deduplicate_initial_states),
+        "initial_state_rows_removed": int(
+            preprocessing_report.iloc[0]["rows_removed"]
+        ),
     }
 
     return TrainingArtifacts(
@@ -551,7 +708,44 @@ def train_mu_fc_from_existing_dataset(
         validation_predictions=validation_outcomes,
         validation_cleaning_report=validation_cleaning,
         full_cleaning_report=full_cleaning,
+        preprocessing_report=preprocessing_report,
         metadata=metadata,
+    )
+
+
+def train_mu_fc_from_existing_dataset(
+    input_dir: Path,
+    *,
+    dataset_mode: str = "no_ties",
+    validation_size: float = 0.25,
+    random_state: int = 42,
+    sample_weight_mode: str = "margin",
+    weight_alpha: float = 0.25,
+    clip_abs: float = 1_000_000.0,
+    n_estimators: int = 400,
+    min_samples_leaf: int = 5,
+    max_depth: Optional[int] = None,
+    deduplicate_initial_states: bool = True,
+    scenario_subset: Optional[Sequence[str]] = None,
+) -> TrainingArtifacts:
+    """Load an existing dataset and delegate to :func:`train_mu_fc_from_dataframe`."""
+
+    input_dir = Path(input_dir)
+    df = load_dataset(input_dir, dataset_mode)
+    return train_mu_fc_from_dataframe(
+        df,
+        dataset_mode=dataset_mode,
+        validation_size=validation_size,
+        random_state=random_state,
+        sample_weight_mode=sample_weight_mode,
+        weight_alpha=weight_alpha,
+        clip_abs=clip_abs,
+        n_estimators=n_estimators,
+        min_samples_leaf=min_samples_leaf,
+        max_depth=max_depth,
+        deduplicate_initial_states=deduplicate_initial_states,
+        scenario_subset=scenario_subset,
+        source_description=str(input_dir),
     )
 
 
@@ -675,6 +869,8 @@ def run_closed_loop_selector(
     previous_heuristic: Optional[str] = None
     switch_count = 0
     decision_count = 0
+    override_count = 0
+    threshold_blocked_count = 0
     heuristic_counts: Dict[str, int] = {}
 
     while not env.done():
@@ -697,6 +893,14 @@ def run_closed_loop_selector(
             predicted_regrets = dict(selection_details["predicted_regrets"])
             heuristic = str(selection_details["selected_heuristic"])
             selected_target_id = selection_details["selected_target_id"]
+            if (
+                selection_details.get("baseline_heuristic") is not None
+                and selection_details["selected_heuristic"]
+                != selection_details["baseline_heuristic"]
+            ):
+                override_count += 1
+            if bool(selection_details.get("threshold_blocked", False)):
+                threshold_blocked_count += 1
         else:
             heuristic = canonical_code_name(selector.choose_heuristic(env))
 
@@ -766,6 +970,128 @@ def run_closed_loop_selector(
         "interception_rate": float(env.intercepted / max(1, env.spawned)),
         "num_decisions": int(decision_count),
         "num_heuristic_switches": int(switch_count),
+        "num_baseline_overrides": int(override_count),
+        "override_share": float(override_count / max(1, decision_count)),
+        "num_threshold_blocked": int(threshold_blocked_count),
         "heuristic_counts": heuristic_counts,
         "decision_log": decision_log,
+    }
+
+
+def run_one_shot_selector(
+    params: ScenarioParams,
+    selector: HeuristicSelector,
+    *,
+    collect_decisions: bool = True,
+) -> Dict[str, Any]:
+    """Choose one heuristic at the first active state and keep it thereafter.
+
+    This baseline separates the value of *initial* instance-level heuristic
+    selection from the additional value of invoking the same learned selector
+    again after every pursued-target resolution.
+    """
+
+    env = SimEnv(params)
+    first_state_features: Dict[str, Any] = {}
+    selection_details: Dict[str, Any] = {}
+
+    while not env.done() and not env.active_threats():
+        env.step(None)
+
+    if env.done():
+        return {
+            "policy": f"One-shot {selector.name}",
+            "spawned": int(env.spawned),
+            "intercepted": int(env.intercepted),
+            "escaped": int(env.escaped),
+            "interception_rate": float(env.intercepted / max(1, env.spawned)),
+            "num_decisions": 0,
+            "num_heuristic_switches": 0,
+            "num_baseline_overrides": 0,
+            "override_share": 0.0,
+            "num_threshold_blocked": 0,
+            "heuristic_counts": {},
+            "decision_log": [],
+        }
+
+    first_state_features = extract_state_features(env)
+    selected_target_id: Optional[int] = None
+    if hasattr(selector, "decision_details"):
+        selection_details = dict(getattr(selector, "decision_details")(env))
+        heuristic = canonical_code_name(selection_details["selected_heuristic"])
+        selected_target_id = selection_details.get("selected_target_id")
+    else:
+        heuristic = canonical_code_name(selector.choose_heuristic(env))
+
+    heuristics = make_heuristics(seed=params.seed)
+    h = heuristics[heuristic]
+    target_id = selected_target_id
+    pursuit_count = 1 if selected_target_id is not None else 0
+
+    while not env.done():
+        active = env.active_threats()
+        if target_id is None or all(th.id != target_id for th in active):
+            target_id = h(active, env.interceptor_pos, params.v_interceptor)
+            if target_id is not None:
+                pursuit_count += 1
+        env.step(target_id)
+
+    display_name = display_heuristic_name(heuristic)
+    decision_log: List[Dict[str, Any]] = []
+    if collect_decisions:
+        row: Dict[str, Any] = {
+            "decision_index": 0,
+            "selector": f"One-shot {selector.name}",
+            "time": float(first_state_features.get("t", 0.0)),
+            "heuristic": display_name,
+            "heuristic_code": heuristic,
+            "selected_target_id": selected_target_id,
+            **first_state_features,
+        }
+        if selection_details:
+            row.update(
+                {
+                    "best_unconstrained_heuristic": display_heuristic_name(
+                        selection_details["best_unconstrained_heuristic"]
+                    ),
+                    "baseline_heuristic": display_heuristic_name(
+                        selection_details["baseline_heuristic"]
+                    ),
+                    "predicted_improvement_over_baseline": float(
+                        selection_details["predicted_improvement_over_baseline"]
+                    ),
+                    "regret_threshold": float(selection_details["regret_threshold"]),
+                    "threshold_mode": selection_details["threshold_mode"],
+                    "threshold_blocked": bool(selection_details["threshold_blocked"]),
+                }
+            )
+            for candidate, regret in selection_details["predicted_regrets"].items():
+                row[f"{display_heuristic_name(candidate)}_predicted_regret"] = float(
+                    regret
+                )
+        decision_log.append(row)
+
+    baseline_override = bool(
+        selection_details
+        and selection_details.get("selected_heuristic")
+        != selection_details.get("baseline_heuristic")
+    )
+    return {
+        "policy": f"One-shot {selector.name}",
+        "spawned": int(env.spawned),
+        "intercepted": int(env.intercepted),
+        "escaped": int(env.escaped),
+        "interception_rate": float(env.intercepted / max(1, env.spawned)),
+        "num_decisions": int(pursuit_count),
+        "num_heuristic_switches": 0,
+        "num_baseline_overrides": int(baseline_override),
+        "override_share": float(baseline_override),
+        "num_threshold_blocked": int(
+            bool(selection_details.get("threshold_blocked", False))
+            if selection_details
+            else 0
+        ),
+        "heuristic_counts": {display_name: int(pursuit_count)},
+        "decision_log": decision_log,
+        "selected_heuristic": heuristic,
     }
