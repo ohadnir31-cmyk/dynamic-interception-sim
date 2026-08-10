@@ -311,32 +311,206 @@ def _rank_rollout_details(details: List[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
-def generate_rollout_labeled_dataset(
+
+def _target_is_active(env: SimEnv, target_id: Optional[int]) -> bool:
+    if target_id is None:
+        return False
+    return any(th.id == target_id for th in env.active_threats())
+
+
+def _target_resolution_reason(env: SimEnv, target_id: Optional[int]) -> str:
+    if target_id is None:
+        return "initial_or_idle"
+    for threat in env.threats:
+        if threat.id != target_id:
+            continue
+        if threat.intercepted:
+            return "selected_target_intercepted"
+        if threat.escaped:
+            return "selected_target_crossed"
+        return "selected_target_unavailable"
+    return "selected_target_unavailable"
+
+
+def _uniform_sample_indices(total: int, requested: Optional[int]) -> List[int]:
+    """Return deterministic indices spread over the complete trajectory."""
+    if total <= 0:
+        return []
+    if requested is None or requested <= 0 or requested >= total:
+        return list(range(total))
+    if requested == 1:
+        return [0]
+
+    raw = np.linspace(0, total - 1, num=int(requested))
+    indices = sorted({int(round(value)) for value in raw})
+    if len(indices) < int(requested):
+        for index in range(total):
+            if index not in indices:
+                indices.append(index)
+            if len(indices) >= int(requested):
+                break
+        indices = sorted(indices)
+    return indices[: int(requested)]
+
+
+def collect_behavior_decision_snapshots(
+    params: ScenarioParams,
+    behavior_heuristic: str,
+    *,
+    behavior_preempt: bool = False,
+    no_target_fallback: Optional[str] = "NI",
+) -> List[Dict[str, Any]]:
+    """Collect genuine target-selection epochs over a complete trajectory.
+
+    A snapshot is stored only when a new pursued target must be selected: at the
+    beginning of an active period, after the previously pursued target was
+    intercepted, or after it crossed the protected boundary. This replaces the
+    historical behavior that labeled every integration step with an active
+    target.
+
+    ``no_target_fallback`` is used only to keep the behavior trajectory moving
+    when a feasibility-based heuristic returns ``None``. Counterfactual labels
+    are still computed for every candidate heuristic from the original snapshot.
+    """
+    heuristics = make_heuristics(seed=params.seed)
+    _validate_requested_heuristics([behavior_heuristic], heuristics, "behavior heuristic")
+    if no_target_fallback is not None:
+        _validate_requested_heuristics([no_target_fallback], heuristics, "fallback heuristic")
+
+    env = SimEnv(params)
+    behavior_h = heuristics[behavior_heuristic]
+    fallback_h = heuristics[no_target_fallback] if no_target_fallback is not None else None
+
+    snapshots: List[Dict[str, Any]] = []
+    target_id: Optional[int] = None
+    pending_reason = "initial"
+    decision_index = 0
+
+    while not env.done():
+        active = env.active_threats()
+
+        if not active:
+            target_id = None
+            env.step(None)
+            pending_reason = "targets_available_after_idle"
+            continue
+
+        if target_id is None or not _target_is_active(env, target_id):
+            if target_id is not None:
+                pending_reason = _target_resolution_reason(env, target_id)
+
+            env_snapshot = copy.deepcopy(env)
+            proposed_target = behavior_h(active, env.interceptor_pos, params.v_interceptor)
+            fallback_used = False
+            if proposed_target is None and fallback_h is not None:
+                proposed_target = fallback_h(active, env.interceptor_pos, params.v_interceptor)
+                fallback_used = proposed_target is not None
+
+            snapshots.append(
+                {
+                    "env_snapshot": env_snapshot,
+                    "behavior_decision_index": int(decision_index),
+                    "decision_epoch_reason": pending_reason,
+                    "behavior_target_id": proposed_target,
+                    "behavior_fallback_used": bool(fallback_used),
+                }
+            )
+            decision_index += 1
+            target_id = proposed_target
+            pending_reason = "selected_target_resolution"
+
+            if target_id is None:
+                env.step(None)
+                pending_reason = "no_target_selected"
+                continue
+
+        events = env.step(target_id)
+        if behavior_preempt and events.get("arrival", 0) > 0:
+            target_id = None
+            pending_reason = "arrival_preemption"
+
+    total_decisions = len(snapshots)
+    for item in snapshots:
+        item["behavior_decision_count"] = int(total_decisions)
+    return snapshots
+
+
+def _build_labeled_row(
+    *,
+    params: ScenarioParams,
+    scenario_name: str,
+    behavior_heuristic: str,
+    behavior_preempt: bool,
+    rollout_preempt: bool,
+    state_id: int,
+    sample_index: int,
+    state_sampling_mode: str,
+    behavior_decision_index: int,
+    behavior_decision_count: int,
+    decision_epoch_reason: str,
+    behavior_target_id: Optional[int],
+    behavior_fallback_used: bool,
+    features: Dict[str, Any],
+    label: Dict[str, Any],
+) -> Dict[str, Any]:
+    row: Dict[str, Any] = {
+        "scenario": scenario_name,
+        "seed": params.seed,
+        "scenario_regime": params.scenario_regime,
+        "spatial_structure": params.spatial_structure,
+        "arrival_process": params.arrival_process,
+        "deadline_pressure": params.deadline_pressure,
+        "initial_targets": params.initial_targets,
+        "lambda_arrival": params.lambda_arrival,
+        "behavior_heuristic": behavior_heuristic,
+        "behavior_preempt": behavior_preempt,
+        "rollout_preempt": rollout_preempt,
+        "state_id": int(state_id),
+        "sample_index": int(sample_index),
+        "state_sampling_mode": state_sampling_mode,
+        "behavior_decision_index": int(behavior_decision_index),
+        "behavior_decision_count": int(behavior_decision_count),
+        "decision_epoch_reason": decision_epoch_reason,
+        "behavior_target_id": behavior_target_id,
+        "behavior_fallback_used": bool(behavior_fallback_used),
+        **features,
+        "winner": label["winner"],
+        "winner_set": label["winner_set"],
+        "n_winners": label["n_winners"],
+        "best_future_intercepted": label["best_future_intercepted"],
+        "best_future_escaped": label["best_future_escaped"],
+    }
+
+    details = list(label["rollout_details"])
+    rank_by_h = _rank_rollout_details(details)
+    for result in details:
+        heuristic = result["rollout_heuristic"]
+        row[f"{heuristic}_future_intercepted"] = result["future_intercepted"]
+        row[f"{heuristic}_future_escaped"] = result["future_escaped"]
+        row[f"{heuristic}_regret"] = (
+            label["best_future_intercepted"] - result["future_intercepted"]
+        )
+        row[f"{heuristic}_rank"] = rank_by_h[heuristic]
+    return row
+
+
+def _generate_legacy_rollout_labeled_dataset(
     params: ScenarioParams,
     scenario_name: str,
     behavior_heuristic: str,
     candidate_heuristics: Sequence[str],
-    behavior_preempt: bool = False,
-    rollout_preempt: bool = False,
-    decision_only: bool = True,
-    max_states: Optional[int] = None,
+    behavior_preempt: bool,
+    rollout_preempt: bool,
+    decision_only: bool,
+    max_states: Optional[int],
 ) -> pd.DataFrame:
-    """
-    Generate state-level rollout labels from one scenario.
-
-    1. Run a behavior policy to generate realistic decision states.
-    2. Copy the environment at selected states.
-    3. Roll out each candidate heuristic from that state.
-    4. Label the state using the best rollout result.
-    """
-
+    """Legacy sampler retained only for reproducing the historical dataset."""
     heuristics = make_heuristics(seed=params.seed)
     _validate_requested_heuristics([behavior_heuristic], heuristics, "behavior heuristic")
     _validate_requested_heuristics(candidate_heuristics, heuristics, "candidate heuristics")
 
     env = SimEnv(params)
     behavior_h = heuristics[behavior_heuristic]
-
     rows: List[Dict[str, Any]] = []
     target_id: Optional[int] = None
     state_counter = 0
@@ -347,64 +521,116 @@ def generate_rollout_labeled_dataset(
 
         if should_label:
             env_snapshot = copy.deepcopy(env)
-
             features = extract_state_features(env_snapshot)
             label = label_state_by_rollout(
                 env_snapshot=env_snapshot,
                 candidate_heuristics=candidate_heuristics,
                 preempt=rollout_preempt,
             )
-
-            row = {
-                "scenario": scenario_name,
-                "seed": params.seed,
-                "scenario_regime": params.scenario_regime,
-                "spatial_structure": params.spatial_structure,
-                "arrival_process": params.arrival_process,
-                "deadline_pressure": params.deadline_pressure,
-                "initial_targets": params.initial_targets,
-                "lambda_arrival": params.lambda_arrival,
-                "behavior_heuristic": behavior_heuristic,
-                "behavior_preempt": behavior_preempt,
-                "rollout_preempt": rollout_preempt,
-                "state_id": state_counter,
-                **features,
-                "winner": label["winner"],
-                "winner_set": label["winner_set"],
-                "n_winners": label["n_winners"],
-                "best_future_intercepted": label["best_future_intercepted"],
-                "best_future_escaped": label["best_future_escaped"],
-            }
-
-            details = list(label["rollout_details"])
-            rank_by_h = _rank_rollout_details(details)
-
-            for r in details:
-                h = r["rollout_heuristic"]
-                row[f"{h}_future_intercepted"] = r["future_intercepted"]
-                row[f"{h}_future_escaped"] = r["future_escaped"]
-                row[f"{h}_regret"] = label["best_future_intercepted"] - r["future_intercepted"]
-                row[f"{h}_rank"] = rank_by_h[h]
-
-            rows.append(row)
+            rows.append(
+                _build_labeled_row(
+                    params=params,
+                    scenario_name=scenario_name,
+                    behavior_heuristic=behavior_heuristic,
+                    behavior_preempt=behavior_preempt,
+                    rollout_preempt=rollout_preempt,
+                    state_id=state_counter,
+                    sample_index=state_counter,
+                    state_sampling_mode="legacy_active_steps",
+                    behavior_decision_index=state_counter,
+                    behavior_decision_count=-1,
+                    decision_epoch_reason="legacy_active_step",
+                    behavior_target_id=target_id,
+                    behavior_fallback_used=False,
+                    features=features,
+                    label=label,
+                )
+            )
             state_counter += 1
-
             if max_states is not None and state_counter >= max_states:
                 break
 
         active = env.active_threats()
-
         if target_id is None or all(th.id != target_id for th in active):
             target_id = behavior_h(active, env.interceptor_pos, params.v_interceptor)
-
         events = env.step(target_id)
-
         if behavior_preempt and events["arrival"] > 0:
             active_after = env.active_threats()
             target_id = behavior_h(active_after, env.interceptor_pos, params.v_interceptor)
 
     return pd.DataFrame(rows)
 
+
+def generate_rollout_labeled_dataset(
+    params: ScenarioParams,
+    scenario_name: str,
+    behavior_heuristic: str,
+    candidate_heuristics: Sequence[str],
+    behavior_preempt: bool = False,
+    rollout_preempt: bool = False,
+    decision_only: bool = True,
+    max_states: Optional[int] = None,
+    state_sampling_mode: str = "decision_epochs_uniform",
+    behavior_no_target_fallback: Optional[str] = "NI",
+) -> pd.DataFrame:
+    """Generate fixed-continuation labels at representative decision epochs."""
+    if state_sampling_mode == "legacy_active_steps":
+        return _generate_legacy_rollout_labeled_dataset(
+            params=params,
+            scenario_name=scenario_name,
+            behavior_heuristic=behavior_heuristic,
+            candidate_heuristics=candidate_heuristics,
+            behavior_preempt=behavior_preempt,
+            rollout_preempt=rollout_preempt,
+            decision_only=decision_only,
+            max_states=max_states,
+        )
+    if state_sampling_mode != "decision_epochs_uniform":
+        raise ValueError(
+            "Unknown state_sampling_mode. Expected 'decision_epochs_uniform' "
+            "or 'legacy_active_steps'."
+        )
+
+    available = make_heuristics(seed=params.seed)
+    _validate_requested_heuristics(candidate_heuristics, available, "candidate heuristics")
+    snapshots = collect_behavior_decision_snapshots(
+        params=params,
+        behavior_heuristic=behavior_heuristic,
+        behavior_preempt=behavior_preempt,
+        no_target_fallback=behavior_no_target_fallback,
+    )
+    selected_indices = _uniform_sample_indices(len(snapshots), max_states)
+
+    rows: List[Dict[str, Any]] = []
+    for sample_index, snapshot_index in enumerate(selected_indices):
+        item = snapshots[snapshot_index]
+        env_snapshot = item["env_snapshot"]
+        features = extract_state_features(env_snapshot)
+        label = label_state_by_rollout(
+            env_snapshot=env_snapshot,
+            candidate_heuristics=candidate_heuristics,
+            preempt=rollout_preempt,
+        )
+        rows.append(
+            _build_labeled_row(
+                params=params,
+                scenario_name=scenario_name,
+                behavior_heuristic=behavior_heuristic,
+                behavior_preempt=behavior_preempt,
+                rollout_preempt=rollout_preempt,
+                state_id=int(item["behavior_decision_index"]),
+                sample_index=sample_index,
+                state_sampling_mode=state_sampling_mode,
+                behavior_decision_index=int(item["behavior_decision_index"]),
+                behavior_decision_count=int(item["behavior_decision_count"]),
+                decision_epoch_reason=str(item["decision_epoch_reason"]),
+                behavior_target_id=item["behavior_target_id"],
+                behavior_fallback_used=bool(item["behavior_fallback_used"]),
+                features=features,
+                label=label,
+            )
+        )
+    return pd.DataFrame(rows)
 
 def _scenario_behavior_jobs(
     scenarios: Dict[str, Any],
@@ -425,6 +651,8 @@ def generate_dataset_for_scenarios(
     candidate_heuristics: Sequence[str],
     rollout_preempt: bool = False,
     max_states_per_run: Optional[int] = None,
+    state_sampling_mode: str = "decision_epochs_uniform",
+    behavior_no_target_fallback: Optional[str] = "NI",
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -454,6 +682,8 @@ def generate_dataset_for_scenarios(
         f"{len(scenarios)} scenarios × {len(behavior_heuristics)} behavior heuristics "
         f"= {total_jobs} jobs"
     )
+    print(f"State sampling mode: {state_sampling_mode}")
+    print(f"Behavior no-target fallback: {behavior_no_target_fallback}")
 
     if max_states_per_run is not None:
         expected_counterfactual_rollouts = (
@@ -489,6 +719,8 @@ def generate_dataset_for_scenarios(
             rollout_preempt=rollout_preempt,
             decision_only=True,
             max_states=max_states_per_run,
+            state_sampling_mode=state_sampling_mode,
+            behavior_no_target_fallback=behavior_no_target_fallback,
         )
 
         if not df_part.empty:
