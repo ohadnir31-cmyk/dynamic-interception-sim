@@ -67,7 +67,7 @@ DISPLAY_NAME: Dict[str, str] = {
     "FCluster": "FCluster",
 }
 
-MODEL_SCHEMA_VERSION = 1
+MODEL_SCHEMA_VERSION = 2
 
 
 def display_heuristic_name(name: str) -> str:
@@ -237,6 +237,8 @@ class FixedContinuationRegretSelector:
     medians: Mapping[str, float]
     candidate_heuristics: Sequence[str]
     clip_abs: float = 1_000_000.0
+    regret_threshold: float = 0.0
+    threshold_mode: str = "nt_override"
     name: str = "Adaptive mu_FC selector"
 
     def __post_init__(self) -> None:
@@ -244,6 +246,14 @@ class FixedContinuationRegretSelector:
         missing = [h for h in self.candidate_heuristics if h not in self.models]
         if missing:
             raise ValueError(f"Missing fitted regret models: {missing}")
+
+        self.regret_threshold = max(0.0, float(self.regret_threshold))
+        allowed_modes = {"none", "nt_override", "previous"}
+        if self.threshold_mode not in allowed_modes:
+            raise ValueError(
+                f"Unknown threshold_mode={self.threshold_mode!r}. "
+                f"Expected one of {sorted(allowed_modes)}."
+            )
 
         # Forests are trained in parallel, but closed-loop inference evaluates
         # one state at a time.  Using all CPU cores for each single-row predict
@@ -278,11 +288,80 @@ class FixedContinuationRegretSelector:
             for heuristic in self.candidate_heuristics
         }
 
-    def choose_heuristic(self, env: SimEnv) -> str:
+    def decision_details(
+        self,
+        env: SimEnv,
+        previous_heuristic: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Choose among heuristics that currently propose a valid target.
+
+        ``nt_override`` is the recommended conservative mode: an alternative is
+        used only when its predicted regret is lower than NT's by at least
+        ``regret_threshold``. ``previous`` provides hysteresis relative to the
+        heuristic used in the preceding pursuit. ``none`` always chooses the
+        valid heuristic with minimum predicted regret.
+        """
         predicted = self.predicted_regrets(env)
-        return min(
-            self.candidate_heuristics,
+        proposals = proposed_targets_by_heuristic(env, self.candidate_heuristics)
+        valid = [
+            heuristic
+            for heuristic in self.candidate_heuristics
+            if proposals.get(heuristic) is not None
+        ]
+        if not valid:
+            raise RuntimeError(
+                "No candidate heuristic proposed a target despite active targets."
+            )
+
+        best = min(
+            valid,
             key=lambda h: (predicted[h], self.candidate_heuristics.index(h)),
+        )
+
+        baseline = best
+        if self.threshold_mode == "nt_override":
+            baseline = "NI" if "NI" in valid else ("NT" if "NT" in valid else best)
+        elif self.threshold_mode == "previous":
+            previous = canonical_code_name(previous_heuristic) if previous_heuristic else None
+            if previous in valid:
+                baseline = str(previous)
+            elif "NI" in valid:
+                baseline = "NI"
+            elif "NT" in valid:
+                baseline = "NT"
+
+        improvement = float(predicted[baseline] - predicted[best])
+        selected = best
+        threshold_blocked = False
+        if self.threshold_mode != "none" and best != baseline:
+            if improvement < self.regret_threshold:
+                selected = baseline
+                threshold_blocked = True
+
+        return {
+            "selected_heuristic": selected,
+            "selected_target_id": proposals[selected],
+            "best_unconstrained_heuristic": best,
+            "baseline_heuristic": baseline,
+            "predicted_improvement_over_baseline": improvement,
+            "regret_threshold": float(self.regret_threshold),
+            "threshold_mode": self.threshold_mode,
+            "threshold_blocked": bool(threshold_blocked),
+            "predicted_regrets": predicted,
+            "proposed_targets": proposals,
+            "valid_heuristics": valid,
+        }
+
+    def choose_heuristic(
+        self,
+        env: SimEnv,
+        previous_heuristic: Optional[str] = None,
+    ) -> str:
+        return str(
+            self.decision_details(
+                env,
+                previous_heuristic=previous_heuristic,
+            )["selected_heuristic"]
         )
 
     def save(self, path: Path, metadata: Optional[Mapping[str, Any]] = None) -> None:
@@ -296,6 +375,8 @@ class FixedContinuationRegretSelector:
                 "medians": dict(self.medians),
                 "candidate_heuristics": list(self.candidate_heuristics),
                 "clip_abs": float(self.clip_abs),
+                "regret_threshold": float(self.regret_threshold),
+                "threshold_mode": self.threshold_mode,
                 "name": self.name,
                 "metadata": dict(metadata or {}),
             },
@@ -305,11 +386,11 @@ class FixedContinuationRegretSelector:
     @classmethod
     def load(cls, path: Path) -> tuple["FixedContinuationRegretSelector", Dict[str, Any]]:
         bundle = joblib.load(Path(path))
-        version = int(bundle.get("schema_version", 0))
-        if version != MODEL_SCHEMA_VERSION:
+        version = int(bundle.get("schema_version", 1))
+        if version not in {1, MODEL_SCHEMA_VERSION}:
             raise ValueError(
                 f"Unsupported selector bundle schema {version}; "
-                f"expected {MODEL_SCHEMA_VERSION}."
+                f"expected 1 or {MODEL_SCHEMA_VERSION}."
             )
         selector = cls(
             models=bundle["models"],
@@ -317,6 +398,8 @@ class FixedContinuationRegretSelector:
             medians=bundle["medians"],
             candidate_heuristics=bundle["candidate_heuristics"],
             clip_abs=float(bundle.get("clip_abs", 1_000_000.0)),
+            regret_threshold=float(bundle.get("regret_threshold", 0.0)),
+            threshold_mode=str(bundle.get("threshold_mode", "nt_override")),
             name=str(bundle.get("name", "Adaptive mu_FC selector")),
         )
         return selector, dict(bundle.get("metadata", {}))
@@ -502,21 +585,34 @@ def _selected_target_resolution_reason(
     return "selected_target_unavailable"
 
 
-def proposed_target_id(env: SimEnv, heuristic_name: str) -> Optional[int]:
-    code_name = canonical_code_name(heuristic_name)
+def proposed_targets_by_heuristic(
+    env: SimEnv,
+    heuristic_names: Sequence[str],
+) -> Dict[str, Optional[int]]:
     heuristics = make_heuristics(seed=env.p.seed)
-    if code_name not in heuristics:
-        raise KeyError(f"Unknown heuristic: {heuristic_name!r}")
-    return heuristics[code_name](
-        env.active_threats(),
-        env.interceptor_pos,
-        env.p.v_interceptor,
-    )
+    active = env.active_threats()
+    proposals: Dict[str, Optional[int]] = {}
+    for heuristic_name in heuristic_names:
+        code_name = canonical_code_name(heuristic_name)
+        if code_name not in heuristics:
+            raise KeyError(f"Unknown heuristic: {heuristic_name!r}")
+        proposals[str(heuristic_name)] = heuristics[code_name](
+            active,
+            env.interceptor_pos,
+            env.p.v_interceptor,
+        )
+    return proposals
+
+
+def proposed_target_id(env: SimEnv, heuristic_name: str) -> Optional[int]:
+    return proposed_targets_by_heuristic(env, [heuristic_name])[str(heuristic_name)]
 
 
 def advance_one_pursuit(
     env: SimEnv,
     heuristic_name: str,
+    *,
+    selected_target_id: Optional[int] = None,
 ) -> DecisionTransition:
     """Use one heuristic to choose one target and pursue it to resolution.
 
@@ -526,7 +622,11 @@ def advance_one_pursuit(
     """
 
     code_name = canonical_code_name(heuristic_name)
-    target_id = proposed_target_id(env, code_name)
+    target_id = (
+        selected_target_id
+        if selected_target_id is not None
+        else proposed_target_id(env, code_name)
+    )
     start_time = float(env.t)
     steps = arrivals = interceptions = escapes = 0
     reason = "horizon"
@@ -584,15 +684,19 @@ def run_closed_loop_selector(
 
         state_features = extract_state_features(env)
         predicted_regrets: Dict[str, float] = {}
-        if hasattr(selector, "predicted_regrets"):
-            # Compute the forest predictions once and reuse them for both the
-            # decision and the optional trace.
-            predicted_regrets = dict(getattr(selector, "predicted_regrets")(env))
-            ordered = list(getattr(selector, "candidate_heuristics", predicted_regrets))
-            heuristic = min(
-                ordered,
-                key=lambda h: (predicted_regrets[h], ordered.index(h)),
+        selection_details: Dict[str, Any] = {}
+        selected_target_id: Optional[int] = None
+
+        if hasattr(selector, "decision_details"):
+            selection_details = dict(
+                getattr(selector, "decision_details")(
+                    env,
+                    previous_heuristic=previous_heuristic,
+                )
             )
+            predicted_regrets = dict(selection_details["predicted_regrets"])
+            heuristic = str(selection_details["selected_heuristic"])
+            selected_target_id = selection_details["selected_target_id"]
         else:
             heuristic = canonical_code_name(selector.choose_heuristic(env))
 
@@ -606,7 +710,11 @@ def run_closed_loop_selector(
 
         before_intercepted = int(env.intercepted)
         before_escaped = int(env.escaped)
-        transition = advance_one_pursuit(env, heuristic)
+        transition = advance_one_pursuit(
+            env,
+            heuristic,
+            selected_target_id=selected_target_id,
+        )
 
         if collect_decisions:
             row: Dict[str, Any] = {
@@ -624,6 +732,26 @@ def run_closed_loop_selector(
                 "escapes_during_pursuit": int(env.escaped) - before_escaped,
                 **state_features,
             }
+            if selection_details:
+                row.update(
+                    {
+                        "best_unconstrained_heuristic": display_heuristic_name(
+                            selection_details["best_unconstrained_heuristic"]
+                        ),
+                        "baseline_heuristic": display_heuristic_name(
+                            selection_details["baseline_heuristic"]
+                        ),
+                        "predicted_improvement_over_baseline": float(
+                            selection_details["predicted_improvement_over_baseline"]
+                        ),
+                        "regret_threshold": float(selection_details["regret_threshold"]),
+                        "threshold_mode": selection_details["threshold_mode"],
+                        "threshold_blocked": bool(selection_details["threshold_blocked"]),
+                        "valid_heuristic_count": len(selection_details["valid_heuristics"]),
+                    }
+                )
+                for candidate, target in selection_details["proposed_targets"].items():
+                    row[f"{display_heuristic_name(candidate)}_proposed_target_id"] = target
             for candidate, regret in predicted_regrets.items():
                 row[f"{display_heuristic_name(candidate)}_predicted_regret"] = float(regret)
             decision_log.append(row)
