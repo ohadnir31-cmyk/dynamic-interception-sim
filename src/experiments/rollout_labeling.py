@@ -572,6 +572,7 @@ def generate_rollout_labeled_dataset(
     max_states: Optional[int] = None,
     state_sampling_mode: str = "decision_epochs_uniform",
     behavior_no_target_fallback: Optional[str] = "NI",
+    include_initial_state: bool = True,
 ) -> pd.DataFrame:
     """Generate fixed-continuation labels at representative decision epochs."""
     if state_sampling_mode == "legacy_active_steps":
@@ -599,6 +600,12 @@ def generate_rollout_labeled_dataset(
         behavior_preempt=behavior_preempt,
         no_target_fallback=behavior_no_target_fallback,
     )
+    if not include_initial_state:
+        snapshots = [
+            item
+            for item in snapshots
+            if str(item.get("decision_epoch_reason")) != "initial"
+        ]
     selected_indices = _uniform_sample_indices(len(snapshots), max_states)
 
     rows: List[Dict[str, Any]] = []
@@ -653,6 +660,7 @@ def generate_dataset_for_scenarios(
     max_states_per_run: Optional[int] = None,
     state_sampling_mode: str = "decision_epochs_uniform",
     behavior_no_target_fallback: Optional[str] = "NI",
+    deduplicate_initial_states: bool = True,
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """
@@ -684,6 +692,7 @@ def generate_dataset_for_scenarios(
     )
     print(f"State sampling mode: {state_sampling_mode}")
     print(f"Behavior no-target fallback: {behavior_no_target_fallback}")
+    print(f"Deduplicate initial states: {deduplicate_initial_states}")
 
     if max_states_per_run is not None:
         expected_counterfactual_rollouts = (
@@ -710,6 +719,7 @@ def generate_dataset_for_scenarios(
     )
 
     for job_index, (scenario_name, scenario_obj, behavior_h) in enumerate(iterator, start=1):
+        first_behavior = str(behavior_heuristics[0])
         df_part = generate_rollout_labeled_dataset(
             params=scenario_obj.params,
             scenario_name=scenario_name,
@@ -721,6 +731,9 @@ def generate_dataset_for_scenarios(
             max_states=max_states_per_run,
             state_sampling_mode=state_sampling_mode,
             behavior_no_target_fallback=behavior_no_target_fallback,
+            include_initial_state=(
+                not deduplicate_initial_states or behavior_h == first_behavior
+            ),
         )
 
         if not df_part.empty:
