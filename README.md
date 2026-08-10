@@ -176,3 +176,10 @@ NT is used only as an evaluation baseline.  See
 ```bash
 python -m src.experiments.run_closed_loop_fc_selector_experiment --help
 ```
+
+
+## Corrected decision-epoch sampling and conservative switching
+
+The state-labeling pipeline now defaults to `--state-sampling-mode decision_epochs_uniform`. It collects genuine target-selection epochs over the full behavior trajectory and spreads up to `--max-states-per-run` samples across that trajectory. Use `legacy_active_steps` only to reproduce the historical dataset.
+
+The closed-loop μFC selector now masks heuristics that do not propose a target and supports regret-threshold gating. See `CLOSED_LOOP_FC_EXPERIMENT.md` for pilot and threshold-tuning commands.
