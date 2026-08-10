@@ -183,3 +183,17 @@ python -m src.experiments.run_closed_loop_fc_selector_experiment --help
 The state-labeling pipeline now defaults to `--state-sampling-mode decision_epochs_uniform`. It collects genuine target-selection epochs over the full behavior trajectory and spreads up to `--max-states-per-run` samples across that trajectory. Use `legacy_active_steps` only to reproduce the historical dataset.
 
 The closed-loop μFC selector now masks heuristics that do not propose a target and supports regret-threshold gating. See `CLOSED_LOOP_FC_EXPERIMENT.md` for pilot and threshold-tuning commands.
+
+## Focused adaptive validation suite
+
+The proposal-stage additive experiment now supports:
+
+- one initial decision state per scenario;
+- `with_ties` regret-regression training;
+- nested 100/250/500-scenario learning curves;
+- validation-based selection of the strongest fixed baseline;
+- conservative baseline-relative regret thresholds;
+- one-shot versus closed-loop learned-selector comparison;
+- an exact adaptive heuristic-portfolio oracle on nontrivial small instances.
+
+See [`ADAPTIVE_VALIDATION_SUITE.md`](ADAPTIVE_VALIDATION_SUITE.md).
