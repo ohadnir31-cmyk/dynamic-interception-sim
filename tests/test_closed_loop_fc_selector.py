@@ -13,8 +13,13 @@ from src.experiments.closed_loop_fc_selector import (
     FixedContinuationRegretSelector,
     FixedHeuristicSelector,
     advance_one_pursuit,
+    preprocess_rollout_dataset,
     run_closed_loop_selector,
+    run_one_shot_selector,
     train_mu_fc_from_existing_dataset,
+)
+from src.experiments.adaptive_portfolio_oracle import (
+    exact_adaptive_portfolio_oracle,
 )
 from src.experiments.rollout_labeling import collect_behavior_decision_snapshots
 from src.sim.env import ScenarioParams, SimEnv
@@ -229,6 +234,117 @@ class ClosedLoopFCSelectorTests(unittest.TestCase):
         self.assertGreaterEqual(len(times), 3)
         self.assertGreater(max(times), 3.0)
         self.assertTrue(all(b >= a for a, b in zip(times, times[1:])))
+
+    def test_initial_state_deduplication_keeps_one_row_per_scenario(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "scenario": "s1",
+                    "decision_epoch_reason": "initial",
+                    "behavior_heuristic": heuristic,
+                    "t": 0.0,
+                }
+                for heuristic in HEURISTICS
+            ]
+            + [
+                {
+                    "scenario": "s1",
+                    "decision_epoch_reason": "selected_target_intercepted",
+                    "behavior_heuristic": "FNI",
+                    "t": 2.0,
+                }
+            ]
+        )
+        prepared, report = preprocess_rollout_dataset(frame)
+        self.assertEqual(len(prepared), 2)
+        self.assertEqual(
+            int((prepared["decision_epoch_reason"] == "initial").sum()),
+            1,
+        )
+        self.assertEqual(int(report.iloc[0]["rows_removed"]), 4)
+
+    def test_configurable_baseline_threshold_uses_fni(self) -> None:
+        params = ScenarioParams(
+            horizon_T=3.0,
+            dt=0.25,
+            v_interceptor=1.0,
+            kill_radius=0.15,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [1.0, 0.0], "vel": [-0.05, 0.0]},
+            ],
+        )
+        env = SimEnv(params)
+        env._spawn_manual_threats_due()
+        models = {
+            "NI": ConstantPredictionModel(0.6),
+            "FNI": ConstantPredictionModel(1.0),
+            "FMTTB": ConstantPredictionModel(0.8),
+            "MPS": ConstantPredictionModel(4.0),
+            "FCluster": ConstantPredictionModel(5.0),
+        }
+        selector = FixedContinuationRegretSelector(
+            models=models,
+            feature_columns=[],
+            medians={},
+            candidate_heuristics=HEURISTICS,
+            regret_threshold=0.5,
+            threshold_mode="baseline_override",
+            baseline_heuristic="FNI",
+        )
+        details = selector.decision_details(env)
+        self.assertEqual(details["best_unconstrained_heuristic"], "NI")
+        self.assertEqual(details["baseline_heuristic"], "FNI")
+        self.assertEqual(details["selected_heuristic"], "FNI")
+        self.assertTrue(details["threshold_blocked"])
+
+    def test_one_shot_selector_keeps_one_heuristic(self) -> None:
+        params = ScenarioParams(
+            horizon_T=5.0,
+            dt=0.25,
+            v_interceptor=1.0,
+            kill_radius=0.15,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [0.7, 0.0], "vel": [-0.05, 0.0]},
+                {"t": 0.0, "pos": [1.8, 0.5], "vel": [-0.05, 0.0]},
+            ],
+        )
+        result = run_one_shot_selector(
+            params,
+            FixedHeuristicSelector("NI"),
+            collect_decisions=True,
+        )
+        self.assertEqual(result["num_heuristic_switches"], 0)
+        self.assertEqual(set(result["heuristic_counts"]), {"NT"})
+        self.assertGreaterEqual(result["num_decisions"], 1)
+
+    def test_exact_portfolio_oracle_is_not_worse_than_fixed_nt(self) -> None:
+        params = ScenarioParams(
+            horizon_T=6.0,
+            dt=0.25,
+            v_interceptor=1.0,
+            kill_radius=0.15,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [0.9, 0.0], "vel": [-0.03, 0.0]},
+                {"t": 0.0, "pos": [1.4, 0.7], "vel": [-0.03, 0.0]},
+                {"t": 0.0, "pos": [1.8, -0.5], "vel": [-0.03, 0.0]},
+            ],
+        )
+        fixed = run_closed_loop_selector(
+            params,
+            FixedHeuristicSelector("NI"),
+            collect_decisions=False,
+        )
+        oracle = exact_adaptive_portfolio_oracle(
+            params,
+            heuristic_names=HEURISTICS,
+            max_decisions=4,
+            max_nodes=10_000,
+        )
+        self.assertGreaterEqual(oracle.intercepted, fixed["intercepted"])
+        self.assertGreaterEqual(oracle.stats.nodes, 1)
 
 
 
