@@ -16,10 +16,20 @@ from src.experiments.closed_loop_fc_selector import (
     run_closed_loop_selector,
     train_mu_fc_from_existing_dataset,
 )
+from src.experiments.rollout_labeling import collect_behavior_decision_snapshots
 from src.sim.env import ScenarioParams, SimEnv
 
 
 HEURISTICS = ["NI", "FNI", "FMTTB", "MPS", "FCluster"]
+
+
+class ConstantPredictionModel:
+    def __init__(self, value: float):
+        self.value = float(value)
+        self.n_jobs = 1
+
+    def predict(self, x):
+        return np.full(len(x), self.value, dtype=float)
 
 
 def make_tiny_rollout_dataset(path: Path) -> None:
@@ -123,6 +133,103 @@ class ClosedLoopFCSelectorTests(unittest.TestCase):
                 {"selected_target_intercepted", "selected_target_crossed"}
             )
         )
+
+
+    def test_regret_threshold_blocks_small_override_of_nt(self) -> None:
+        params = ScenarioParams(
+            horizon_T=3.0,
+            dt=0.25,
+            v_interceptor=1.0,
+            kill_radius=0.15,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [1.0, 0.0], "vel": [-0.05, 0.0]},
+            ],
+        )
+        env = SimEnv(params)
+        env._spawn_manual_threats_due()
+        models = {
+            "NI": ConstantPredictionModel(1.0),
+            "FNI": ConstantPredictionModel(0.8),
+            "FMTTB": ConstantPredictionModel(3.0),
+            "MPS": ConstantPredictionModel(4.0),
+            "FCluster": ConstantPredictionModel(5.0),
+        }
+        selector = FixedContinuationRegretSelector(
+            models=models,
+            feature_columns=[],
+            medians={},
+            candidate_heuristics=HEURISTICS,
+            regret_threshold=0.5,
+            threshold_mode="nt_override",
+        )
+        details = selector.decision_details(env)
+        self.assertEqual(details["best_unconstrained_heuristic"], "FNI")
+        self.assertEqual(details["selected_heuristic"], "NI")
+        self.assertTrue(details["threshold_blocked"])
+
+        selector.regret_threshold = 0.1
+        details = selector.decision_details(env)
+        self.assertEqual(details["selected_heuristic"], "FNI")
+        self.assertFalse(details["threshold_blocked"])
+
+    def test_invalid_feasibility_heuristics_are_masked(self) -> None:
+        params = ScenarioParams(
+            horizon_T=2.0,
+            dt=0.25,
+            v_interceptor=0.1,
+            kill_radius=0.01,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [0.2, 10.0], "vel": [-1.0, 0.0]},
+            ],
+        )
+        env = SimEnv(params)
+        env._spawn_manual_threats_due()
+        models = {
+            "NI": ConstantPredictionModel(5.0),
+            "FNI": ConstantPredictionModel(0.0),
+            "FMTTB": ConstantPredictionModel(0.1),
+            "MPS": ConstantPredictionModel(0.2),
+            "FCluster": ConstantPredictionModel(10.0),
+        }
+        selector = FixedContinuationRegretSelector(
+            models=models,
+            feature_columns=[],
+            medians={},
+            candidate_heuristics=HEURISTICS,
+            regret_threshold=0.0,
+            threshold_mode="none",
+        )
+        details = selector.decision_details(env)
+        self.assertEqual(details["selected_heuristic"], "NI")
+        self.assertEqual(details["valid_heuristics"], ["NI", "FCluster"])
+        self.assertIsNotNone(details["selected_target_id"])
+
+    def test_decision_snapshots_cover_late_trajectory(self) -> None:
+        params = ScenarioParams(
+            horizon_T=8.0,
+            dt=0.25,
+            v_interceptor=1.5,
+            kill_radius=0.15,
+            home=(0.0, 0.0),
+            manual_threats=[
+                {"t": 0.0, "pos": [0.8, 0.0], "vel": [-0.02, 0.0]},
+                {"t": 1.5, "pos": [1.0, 0.5], "vel": [-0.02, 0.0]},
+                {"t": 3.0, "pos": [1.2, -0.5], "vel": [-0.02, 0.0]},
+                {"t": 4.5, "pos": [1.0, 0.2], "vel": [-0.02, 0.0]},
+            ],
+        )
+        snapshots = collect_behavior_decision_snapshots(
+            params,
+            "NI",
+            no_target_fallback="NI",
+        )
+        times = [float(item["env_snapshot"].t) for item in snapshots]
+        self.assertGreaterEqual(len(times), 3)
+        self.assertGreater(max(times), 3.0)
+        self.assertTrue(all(b >= a for a, b in zip(times, times[1:])))
+
 
 
 if __name__ == "__main__":
