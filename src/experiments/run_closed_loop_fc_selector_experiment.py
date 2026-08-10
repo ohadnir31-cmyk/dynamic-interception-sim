@@ -22,6 +22,7 @@ from src.experiments.closed_loop_fc_selector import (
     DEFAULT_CANDIDATE_HEURISTICS,
     FixedContinuationRegretSelector,
     display_heuristic_name,
+    run_one_shot_selector,
     run_closed_loop_selector,
     train_mu_fc_from_existing_dataset,
 )
@@ -53,7 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-mode",
         choices=["no_ties", "with_ties", "full"],
-        default="no_ties",
+        default="with_ties",
+    )
+    parser.add_argument(
+        "--keep-duplicate-initial-states",
+        action="store_true",
+        help="Disable the default one-initial-row-per-scenario preprocessing.",
     )
     parser.add_argument("--validation-size", type=float, default=0.25)
     parser.add_argument("--random-state", type=int, default=42)
@@ -78,13 +84,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold-mode",
-        choices=["none", "nt_override", "previous"],
-        default="nt_override",
+        choices=["none", "baseline_override", "nt_override", "previous"],
+        default="baseline_override",
         help=(
-            "'nt_override' keeps NT unless an alternative beats it by the "
-            "threshold; 'previous' retains the preceding heuristic unless the "
-            "new best is better by the threshold; 'none' disables gating."
+            "'baseline_override' keeps --baseline-heuristic unless an alternative "
+            "beats it by the threshold; 'nt_override' forces NT as that baseline; "
+            "'previous' retains the preceding heuristic; 'none' disables gating."
         ),
+    )
+    parser.add_argument(
+        "--baseline-heuristic",
+        type=str,
+        default="NI",
+        help="Code label of the fixed heuristic protected by baseline_override.",
     )
     parser.add_argument(
         "--threshold-grid",
@@ -276,6 +288,10 @@ def _write_training_outputs(artifacts: Any, output_dir: Path) -> None:
         output_dir / "mu_fc_full_fit_feature_cleaning.csv",
         index=False,
     )
+    artifacts.preprocessing_report.to_csv(
+        output_dir / "mu_fc_dataset_preprocessing.csv",
+        index=False,
+    )
 
 
 
@@ -296,6 +312,7 @@ def _selector_with_threshold(
     *,
     threshold: float,
     threshold_mode: str,
+    baseline_heuristic: Optional[str] = None,
     name: Optional[str] = None,
 ) -> FixedContinuationRegretSelector:
     return FixedContinuationRegretSelector(
@@ -306,6 +323,7 @@ def _selector_with_threshold(
         clip_abs=selector.clip_abs,
         regret_threshold=float(threshold),
         threshold_mode=threshold_mode,
+        baseline_heuristic=baseline_heuristic or selector.baseline_heuristic,
         name=name
         or (
             f"Adaptive mu_FC selector (mode={threshold_mode}, "
@@ -322,6 +340,7 @@ def _tune_regret_threshold(
     seed: int,
     scenario_mix: str,
     threshold_mode: str,
+    baseline_heuristic: str,
     output_dir: Path,
 ) -> float:
     """Choose the threshold on a fresh closed-loop validation scenario set."""
@@ -339,13 +358,20 @@ def _tune_regret_threshold(
         scenario_mix=scenario_mix,
     )
 
-    nt_by_scenario: Dict[str, int] = {}
+    baseline_by_scenario: Dict[str, int] = {}
     for scenario_name, scenario_obj in tqdm(
         scenarios.items(),
-        desc="Threshold validation: Always NT",
+        desc=(
+            "Threshold validation: Always "
+            f"{display_heuristic_name(baseline_heuristic)}"
+        ),
     ):
-        fixed = run_episode(scenario_obj.params, heuristic_name="NI", preempt=False)
-        nt_by_scenario[scenario_name] = int(fixed["intercepted"])
+        fixed = run_episode(
+            scenario_obj.params,
+            heuristic_name=baseline_heuristic,
+            preempt=False,
+        )
+        baseline_by_scenario[scenario_name] = int(fixed["intercepted"])
 
     rows: List[Dict[str, Any]] = []
     for threshold in thresholds:
@@ -353,6 +379,7 @@ def _tune_regret_threshold(
             selector,
             threshold=float(threshold),
             threshold_mode=threshold_mode,
+            baseline_heuristic=baseline_heuristic,
         )
         intercepted_values: List[int] = []
         escaped_values: List[int] = []
@@ -377,7 +404,7 @@ def _tune_regret_threshold(
             escaped_values.append(escaped)
             active_values.append(active)
             switch_values.append(int(result["num_heuristic_switches"]))
-            differences.append(intercepted - nt_by_scenario[scenario_name])
+            differences.append(intercepted - baseline_by_scenario[scenario_name])
 
         diff_array = np.asarray(differences)
         rows.append(
@@ -386,10 +413,11 @@ def _tune_regret_threshold(
                 "threshold_mode": threshold_mode,
                 "scenarios": int(n_scenarios),
                 "mean_intercepted": float(np.mean(intercepted_values)),
-                "mean_difference_vs_NT": float(np.mean(diff_array)),
-                "win_rate_vs_NT": float(np.mean(diff_array > 0)),
-                "tie_rate_vs_NT": float(np.mean(diff_array == 0)),
-                "loss_rate_vs_NT": float(np.mean(diff_array < 0)),
+                "baseline_heuristic": display_heuristic_name(baseline_heuristic),
+                "mean_difference_vs_baseline": float(np.mean(diff_array)),
+                "win_rate_vs_baseline": float(np.mean(diff_array > 0)),
+                "tie_rate_vs_baseline": float(np.mean(diff_array == 0)),
+                "loss_rate_vs_baseline": float(np.mean(diff_array < 0)),
                 "mean_escaped": float(np.mean(escaped_values)),
                 "mean_active_at_horizon": float(np.mean(active_values)),
                 "mean_switches": float(np.mean(switch_values)),
@@ -444,6 +472,7 @@ def main() -> None:
             n_estimators=args.n_estimators,
             min_samples_leaf=args.min_samples_leaf,
             max_depth=args.max_depth,
+            deduplicate_initial_states=not args.keep_duplicate_initial_states,
         )
         selector = artifacts.selector
         training_metadata = artifacts.metadata
@@ -464,6 +493,7 @@ def main() -> None:
             seed=args.threshold_validation_seed,
             scenario_mix=args.scenario_mix,
             threshold_mode=args.threshold_mode,
+            baseline_heuristic=args.baseline_heuristic,
             output_dir=output_dir,
         )
 
@@ -471,6 +501,7 @@ def main() -> None:
         selector,
         threshold=selected_threshold,
         threshold_mode=args.threshold_mode,
+        baseline_heuristic=args.baseline_heuristic,
     )
     configured_model_path = output_dir / "mu_fc_selector_configured.joblib"
     selector.save(
@@ -479,10 +510,12 @@ def main() -> None:
             **training_metadata,
             "regret_threshold": selected_threshold,
             "threshold_mode": args.threshold_mode,
+            "baseline_heuristic": args.baseline_heuristic,
         },
     )
     print(
         f"Closed-loop gate: mode={args.threshold_mode}, "
+        f"baseline={display_heuristic_name(args.baseline_heuristic)}, "
         f"threshold={selected_threshold:g}"
     )
 
