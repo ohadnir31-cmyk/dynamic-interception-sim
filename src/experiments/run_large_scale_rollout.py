@@ -412,6 +412,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="outputs/large_scale")
     parser.add_argument("--max-states-per-run", type=int, default=8)
     parser.add_argument(
+        "--state-sampling-mode",
+        choices=["decision_epochs_uniform", "legacy_active_steps"],
+        default="decision_epochs_uniform",
+        help=(
+            "How state-level snapshots are selected. The default collects true "
+            "target-selection epochs and spreads samples over the full trajectory."
+        ),
+    )
+    parser.add_argument(
+        "--behavior-no-target-fallback",
+        type=str,
+        default="NI",
+        help=(
+            "Fallback used only while generating behavior trajectories when a "
+            "feasibility-based heuristic returns no target. Use 'none' to disable."
+        ),
+    )
+    parser.add_argument(
         "--min-threat-speed",
         type=float,
         default=DEFAULT_MIN_THREAT_SPEED,
@@ -441,6 +459,14 @@ def parse_args() -> argparse.Namespace:
         "--skip-state-labels",
         action="store_true",
         help="Only run fixed-heuristic scenario rollouts and skip state-level labels.",
+    )
+    parser.add_argument(
+        "--skip-full-rollouts",
+        action="store_true",
+        help=(
+            "Skip complete fixed-heuristic scenario evaluation and generate only "
+            "scenario parameters and state-level labels."
+        ),
     )
 
     return parser.parse_args()
@@ -489,21 +515,22 @@ def main() -> None:
         index=False,
     )
 
-    df_full = run_full_heuristic_rollouts(
-        scenarios=scenarios,
-        heuristics=CANDIDATE_HEURISTICS,
-        output_path=output_dir / "large_scale_full_heuristic_rollouts.csv",
-    )
-
-    summarize_heuristics(
-        df_full,
-        output_dir / "large_scale_heuristic_summary.csv",
-    )
-
-    summarize_scenario_winners(
-        df_full,
-        output_dir / "large_scale_scenario_winners.csv",
-    )
+    if not args.skip_full_rollouts:
+        df_full = run_full_heuristic_rollouts(
+            scenarios=scenarios,
+            heuristics=CANDIDATE_HEURISTICS,
+            output_path=output_dir / "large_scale_full_heuristic_rollouts.csv",
+        )
+        summarize_heuristics(
+            df_full,
+            output_dir / "large_scale_heuristic_summary.csv",
+        )
+        summarize_scenario_winners(
+            df_full,
+            output_dir / "large_scale_scenario_winners.csv",
+        )
+    else:
+        print("Skipping complete fixed-heuristic rollouts.")
 
     if not args.skip_state_labels:
         label_items = list(scenarios.items())[: args.state_label_scenarios]
@@ -513,6 +540,13 @@ def main() -> None:
         print(f"state_label_scenarios: {len(label_scenarios)}")
         print(f"behavior heuristics: {DEFAULT_BEHAVIOR_HEURISTICS}")
         print(f"max_states_per_run: {args.max_states_per_run}")
+        print(f"state_sampling_mode: {args.state_sampling_mode}")
+        fallback = (
+            None
+            if args.behavior_no_target_fallback.lower() == "none"
+            else args.behavior_no_target_fallback
+        )
+        print(f"behavior_no_target_fallback: {fallback}")
 
         df_states = generate_dataset_for_scenarios(
             scenarios=label_scenarios,
@@ -520,6 +554,8 @@ def main() -> None:
             candidate_heuristics=CANDIDATE_HEURISTICS,
             rollout_preempt=False,
             max_states_per_run=args.max_states_per_run,
+            state_sampling_mode=args.state_sampling_mode,
+            behavior_no_target_fallback=fallback,
         )
 
         df_states.to_csv(
