@@ -430,6 +430,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--keep-duplicate-initial-states",
+        action="store_true",
+        help=(
+            "Keep the identical initial decision epoch once per behavior "
+            "trajectory. By default it is labeled only for the first behavior "
+            "heuristic in each scenario."
+        ),
+    )
+    parser.add_argument(
         "--min-threat-speed",
         type=float,
         default=DEFAULT_MIN_THREAT_SPEED,
@@ -547,6 +556,10 @@ def main() -> None:
             else args.behavior_no_target_fallback
         )
         print(f"behavior_no_target_fallback: {fallback}")
+        print(
+            "deduplicate_initial_states: "
+            f"{not args.keep_duplicate_initial_states}"
+        )
 
         df_states = generate_dataset_for_scenarios(
             scenarios=label_scenarios,
@@ -556,6 +569,7 @@ def main() -> None:
             max_states_per_run=args.max_states_per_run,
             state_sampling_mode=args.state_sampling_mode,
             behavior_no_target_fallback=fallback,
+            deduplicate_initial_states=not args.keep_duplicate_initial_states,
         )
 
         df_states.to_csv(
