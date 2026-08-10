@@ -67,6 +67,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-estimators", type=int, default=400)
     parser.add_argument("--min-samples-leaf", type=int, default=5)
     parser.add_argument("--max-depth", type=int, default=None)
+    parser.add_argument(
+        "--regret-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum predicted-regret improvement required before leaving the "
+            "threshold baseline. The unit is predicted future interceptions."
+        ),
+    )
+    parser.add_argument(
+        "--threshold-mode",
+        choices=["none", "nt_override", "previous"],
+        default="nt_override",
+        help=(
+            "'nt_override' keeps NT unless an alternative beats it by the "
+            "threshold; 'previous' retains the preceding heuristic unless the "
+            "new best is better by the threshold; 'none' disables gating."
+        ),
+    )
+    parser.add_argument(
+        "--threshold-grid",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated threshold grid, e.g. "
+            "'0,0.25,0.5,1,1.5,2,3'. The threshold is selected on a separate "
+            "closed-loop validation set."
+        ),
+    )
+    parser.add_argument("--n-threshold-validation-scenarios", type=int, default=0)
+    parser.add_argument("--threshold-validation-seed", type=int, default=20260809)
 
     parser.add_argument("--n-test-scenarios", type=int, default=250)
     parser.add_argument("--test-seed", type=int, default=20260810)
@@ -118,6 +149,9 @@ def _policy_summary(results: pd.DataFrame) -> pd.DataFrame:
                 "median_intercepted": float(group["intercepted"].median()),
                 "mean_escaped": float(group["escaped"].mean()),
                 "mean_spawned": float(group["spawned"].mean()),
+                "mean_active_at_horizon": float(
+                    (group["spawned"] - group["intercepted"] - group["escaped"]).mean()
+                ),
                 "mean_interception_rate": float(group["interception_rate"].mean()),
                 "mean_decisions": float(group["num_decisions"].mean()),
                 "mean_switches": float(group["num_heuristic_switches"].mean()),
@@ -244,6 +278,143 @@ def _write_training_outputs(artifacts: Any, output_dir: Path) -> None:
     )
 
 
+
+def _parse_threshold_grid(value: str) -> List[float]:
+    if not value.strip():
+        return []
+    return sorted(
+        {
+            max(0.0, float(token.strip()))
+            for token in value.split(",")
+            if token.strip()
+        }
+    )
+
+
+def _selector_with_threshold(
+    selector: FixedContinuationRegretSelector,
+    *,
+    threshold: float,
+    threshold_mode: str,
+    name: Optional[str] = None,
+) -> FixedContinuationRegretSelector:
+    return FixedContinuationRegretSelector(
+        models=selector.models,
+        feature_columns=selector.feature_columns,
+        medians=selector.medians,
+        candidate_heuristics=selector.candidate_heuristics,
+        clip_abs=selector.clip_abs,
+        regret_threshold=float(threshold),
+        threshold_mode=threshold_mode,
+        name=name
+        or (
+            f"Adaptive mu_FC selector (mode={threshold_mode}, "
+            f"tau={float(threshold):g})"
+        ),
+    )
+
+
+def _tune_regret_threshold(
+    selector: FixedContinuationRegretSelector,
+    *,
+    thresholds: Sequence[float],
+    n_scenarios: int,
+    seed: int,
+    scenario_mix: str,
+    threshold_mode: str,
+    output_dir: Path,
+) -> float:
+    """Choose the threshold on a fresh closed-loop validation scenario set."""
+    if not thresholds:
+        return float(selector.regret_threshold)
+    if n_scenarios <= 0:
+        raise ValueError(
+            "A threshold grid was supplied, but "
+            "--n-threshold-validation-scenarios is not positive."
+        )
+
+    scenarios = make_large_scale_scenarios(
+        n_scenarios=int(n_scenarios),
+        seed=int(seed),
+        scenario_mix=scenario_mix,
+    )
+
+    nt_by_scenario: Dict[str, int] = {}
+    for scenario_name, scenario_obj in tqdm(
+        scenarios.items(),
+        desc="Threshold validation: Always NT",
+    ):
+        fixed = run_episode(scenario_obj.params, heuristic_name="NI", preempt=False)
+        nt_by_scenario[scenario_name] = int(fixed["intercepted"])
+
+    rows: List[Dict[str, Any]] = []
+    for threshold in thresholds:
+        candidate = _selector_with_threshold(
+            selector,
+            threshold=float(threshold),
+            threshold_mode=threshold_mode,
+        )
+        intercepted_values: List[int] = []
+        escaped_values: List[int] = []
+        active_values: List[int] = []
+        switch_values: List[int] = []
+        differences: List[int] = []
+
+        for scenario_name, scenario_obj in tqdm(
+            scenarios.items(),
+            desc=f"Threshold validation tau={threshold:g}",
+            leave=False,
+        ):
+            result = run_closed_loop_selector(
+                scenario_obj.params,
+                candidate,
+                collect_decisions=False,
+            )
+            intercepted = int(result["intercepted"])
+            escaped = int(result["escaped"])
+            active = int(result["spawned"] - intercepted - escaped)
+            intercepted_values.append(intercepted)
+            escaped_values.append(escaped)
+            active_values.append(active)
+            switch_values.append(int(result["num_heuristic_switches"]))
+            differences.append(intercepted - nt_by_scenario[scenario_name])
+
+        diff_array = np.asarray(differences)
+        rows.append(
+            {
+                "threshold": float(threshold),
+                "threshold_mode": threshold_mode,
+                "scenarios": int(n_scenarios),
+                "mean_intercepted": float(np.mean(intercepted_values)),
+                "mean_difference_vs_NT": float(np.mean(diff_array)),
+                "win_rate_vs_NT": float(np.mean(diff_array > 0)),
+                "tie_rate_vs_NT": float(np.mean(diff_array == 0)),
+                "loss_rate_vs_NT": float(np.mean(diff_array < 0)),
+                "mean_escaped": float(np.mean(escaped_values)),
+                "mean_active_at_horizon": float(np.mean(active_values)),
+                "mean_switches": float(np.mean(switch_values)),
+            }
+        )
+
+    summary = pd.DataFrame(rows)
+    summary.to_csv(output_dir / "closed_loop_threshold_validation.csv", index=False)
+    ranked = summary.sort_values(
+        [
+            "mean_intercepted",
+            "mean_escaped",
+            "mean_active_at_horizon",
+            "mean_switches",
+            "threshold",
+        ],
+        ascending=[False, True, True, True, False],
+    )
+    chosen = float(ranked.iloc[0]["threshold"])
+    print("\nThreshold validation summary")
+    print("----------------------------")
+    print(summary.to_string(index=False))
+    print(f"Selected regret threshold: {chosen:g}")
+    return chosen
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -282,6 +453,38 @@ def main() -> None:
         print(f"Saved selector: {model_path}")
         print("Internal validation:")
         print(artifacts.validation_summary.to_string(index=False))
+
+    thresholds = _parse_threshold_grid(args.threshold_grid)
+    selected_threshold = float(args.regret_threshold)
+    if thresholds:
+        selected_threshold = _tune_regret_threshold(
+            selector,
+            thresholds=thresholds,
+            n_scenarios=args.n_threshold_validation_scenarios,
+            seed=args.threshold_validation_seed,
+            scenario_mix=args.scenario_mix,
+            threshold_mode=args.threshold_mode,
+            output_dir=output_dir,
+        )
+
+    selector = _selector_with_threshold(
+        selector,
+        threshold=selected_threshold,
+        threshold_mode=args.threshold_mode,
+    )
+    configured_model_path = output_dir / "mu_fc_selector_configured.joblib"
+    selector.save(
+        configured_model_path,
+        {
+            **training_metadata,
+            "regret_threshold": selected_threshold,
+            "threshold_mode": args.threshold_mode,
+        },
+    )
+    print(
+        f"Closed-loop gate: mode={args.threshold_mode}, "
+        f"threshold={selected_threshold:g}"
+    )
 
     scenarios = make_large_scale_scenarios(
         n_scenarios=args.n_test_scenarios,
@@ -419,8 +622,11 @@ def main() -> None:
         ),
         "always_nt_role": "evaluation baseline only",
         "global_adaptive_oracle_computed": False,
+        "regret_threshold": float(selected_threshold),
+        "threshold_mode": args.threshold_mode,
         "arguments": vars(args),
         "model_path": str(model_path),
+        "configured_model_path": str(configured_model_path),
         "training_metadata": training_metadata,
     }
     with (output_dir / "closed_loop_experiment_manifest.json").open(
