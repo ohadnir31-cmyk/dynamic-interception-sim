@@ -164,3 +164,15 @@ python -m src.experiments.run_large_scale_rollout \
   --min-boundary-speed 0.05 \
   --output-dir outputs/large_scale_1000_decision_rich_fixed_ttb
 ```
+
+## Closed-loop evaluation of the existing selector
+
+The repository now includes a proposal-stage experiment that trains `mu_FC`
+from the existing fixed-continuation rollout dataset and invokes it again after
+every pursued target is intercepted or crosses the protected boundary.  Always
+NT is used only as an evaluation baseline.  See
+[`CLOSED_LOOP_FC_EXPERIMENT.md`](CLOSED_LOOP_FC_EXPERIMENT.md) and run:
+
+```bash
+python -m src.experiments.run_closed_loop_fc_selector_experiment --help
+```
