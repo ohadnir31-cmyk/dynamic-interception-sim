@@ -1,0 +1,17 @@
+{
+  "local_checks_passed": [
+    "preflight accepts the expected patched file",
+    "safe archive extraction reads baseline source",
+    "preflight rejects unrelated source changes",
+    "paired aggregation and accounting checks",
+    "exact historical replay match",
+    "historical mismatch rejects changed results",
+    "applicator creates expected env.py and rejects duplicate application"
+  ],
+  "full_repository_or_user_datasets_run": false,
+  "source_note": "env.py transcribed from the pinned public source; full clone unavailable in this runtime; runner verifies the file against git show before any actual paired runs.",
+  "analytic_logs": {
+    "original": "Imported simulator: /mnt/data/boundary_env_source_test/src/sim/env.py\nPASS: contact AFTER crossing: intercepted=1, escaped=0\nPASS: contact BEFORE crossing: intercepted=1, escaped=0\nPASS: contact AT crossing: intercepted=1, escaped=0\nALL ANALYTIC CHECKS PASSED (original)\n",
+    "fixed": "Imported simulator: /mnt/data/boundary_env_source_test/src/sim/env.py\nPASS: contact AFTER crossing: intercepted=0, escaped=1\nPASS: contact BEFORE crossing: intercepted=1, escaped=0\nPASS: contact AT crossing: intercepted=0, escaped=1\nPASS: midstep stop and already-crossed target\nALL ANALYTIC CHECKS PASSED (fixed)\n"
+  }
+}
