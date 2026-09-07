@@ -5,6 +5,65 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+# BEGIN NARROW LATE-CAPTURE SCORING FIX
+
+def _boundary_fix_segment_contact(r, w, radius, duration):
+    """First contact in a constant-relative-velocity segment, or infinity."""
+    c = float(np.dot(r, r) - radius * radius)
+    if c <= 0.0:
+        return 0.0
+    a = float(np.dot(w, w))
+    if a == 0.0:
+        return np.inf
+    b = float(2.0 * np.dot(r, w))
+    discriminant = b * b - 4.0 * a * c
+    if discriminant < 0.0:
+        return np.inf
+    # Stable roots of a*t^2+b*t+c=0.
+    q = -0.5 * (b + np.copysign(np.sqrt(discriminant), b))
+    roots = [q / a, c / q] if q != 0.0 else [-b / (2.0 * a)]
+    for value in sorted(roots):
+        if 0.0 <= value <= duration + 1e-12:
+            return min(float(value), duration)
+    return np.inf
+
+
+def _boundary_fix_contact_time(pI0, destination, pT0, vT, speed, radius, dt):
+    """Respect move_toward's speed cap and possible midstep stop."""
+    delta = destination - pI0
+    distance = float(np.linalg.norm(delta))
+    if distance < 1e-12 or speed <= 0.0:
+        return _boundary_fix_segment_contact(pT0 - pI0, vT, radius, dt)
+    moving_duration = min(dt, distance / speed)
+    interceptor_velocity = delta * (speed / distance)
+    hit = _boundary_fix_segment_contact(
+        pT0 - pI0, vT - interceptor_velocity, radius, moving_duration
+    )
+    if np.isfinite(hit):
+        return hit
+    if moving_duration < dt:
+        relative_start = pT0 + vT * moving_duration - destination
+        hit = _boundary_fix_segment_contact(
+            relative_start, vT, radius, dt - moving_duration
+        )
+        if np.isfinite(hit):
+            return moving_duration + hit
+    return np.inf
+
+
+def _boundary_fix_valid_capture(pI0, destination, pT0, vT, speed, radius, dt):
+    """A target must first enter the radius strictly BEFORE reaching x=0."""
+    if pT0[0] <= 0.0:
+        return False
+    crossing_time = -float(pT0[0]) / float(vT[0]) if vT[0] < 0.0 else np.inf
+    hit_time = _boundary_fix_contact_time(
+        pI0, destination, pT0, vT, speed, radius, dt
+    )
+    return bool(np.isfinite(hit_time) and hit_time < crossing_time - 1e-10)
+
+# END NARROW LATE-CAPTURE SCORING FIX
+
+
 
 EPS = 1e-9
 
@@ -22,14 +81,12 @@ class ScenarioParams:
     y_spawn_sigma: float = 25.0
     v_threat_mean: float = 18.0
     v_threat_std: float = 3.0
-
     # Lower bounds for stochastic target generation.
     # These avoid pathological targets that almost do not move toward x=0,
     # which create operationally meaningless TTB values in a finite-horizon
     # simulation. Manual scenarios are not affected.
     min_threat_speed: float = 0.05
     min_boundary_speed: float = 0.05
-
     # Larger-experiment controls.
     initial_targets: int = 0
     arrival_process: str = "bernoulli"  # bernoulli, poisson, bursty
@@ -43,7 +100,6 @@ class ScenarioParams:
     # Metadata.
     scenario_regime: str = "unspecified"
     deadline_pressure: str = "unspecified"
-
     # Interceptor.
     v_interceptor: float = 20.0
     kill_radius: float = 2.0
@@ -66,7 +122,6 @@ class Threat:
 def time_to_boundary_x0(pos: np.ndarray, vel: np.ndarray) -> float:
     """
     Time until the target reaches the protected boundary x = 0.
-
     Returns inf if the target is not moving toward the boundary.
     """
     x = float(pos[0])
@@ -87,7 +142,6 @@ def time_to_intercept(
 ) -> float:
     """
     Estimate time-to-intercept.
-
     If target_vel is provided, this solves the constant-velocity lead-intercept
     equation:
 
@@ -96,7 +150,6 @@ def time_to_intercept(
     and returns the smallest non-negative solution. This is the time required
     for an interceptor flying at speed vI to meet the moving target by aiming at
     the predicted future intercept point.
-
     If target_vel is omitted, the function falls back to the older static
     distance / speed calculation. This fallback is kept only for backward
     compatibility with older analysis notebooks.
@@ -111,7 +164,6 @@ def time_to_intercept(
         return float(np.linalg.norm(r) / speed)
 
     vT = np.array(target_vel, dtype=float)
-
     c = float(np.dot(r, r))
     if c <= EPS:
         return 0.0
@@ -129,7 +181,6 @@ def time_to_intercept(
     disc = b * b - 4.0 * a * c
     if disc < 0:
         return np.inf
-
     sqrt_disc = float(np.sqrt(max(0.0, disc)))
     roots = [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)]
     nonnegative_roots = [float(t) for t in roots if t >= -EPS]
@@ -148,7 +199,6 @@ def predicted_intercept_point(
 ) -> np.ndarray:
     """
     Predicted lead-intercept point for a moving target.
-
     If no finite lead-intercept solution exists, fall back to the target's
     current position. This keeps the simulator well-defined even for cases in
     which the target is too fast or geometrically unreachable.
@@ -162,7 +212,6 @@ def predicted_intercept_point(
 
     if not np.isfinite(tti):
         return np.array(target_pos, dtype=float).copy()
-
     return np.array(target_pos, dtype=float) + np.array(target_vel, dtype=float) * tti
 
 
@@ -171,7 +220,6 @@ def slack(interceptor_pos: np.ndarray, th: Threat, vI: float) -> float:
     Feasibility margin for a single moving target.
 
     slack = TTB - TTI
-
     where TTB is time-to-boundary and TTI is the moving-target lead-intercept
     time. A non-negative slack means that, under the lead-intercept model, the
     interceptor can reach the target before the target reaches x = 0.
@@ -182,7 +230,6 @@ def slack(interceptor_pos: np.ndarray, th: Threat, vI: float) -> float:
         target_vel=th.vel,
         vI=vI,
     )
-
 
 def move_toward(p: np.ndarray, q: np.ndarray, speed: float, dt: float) -> np.ndarray:
     d = q - p
@@ -204,7 +251,6 @@ class SimEnv:
     Protected boundary: x = 0.
     A target penetrates the boundary if x <= 0.
     If manual_threats is provided, stochastic spawning is disabled.
-
     Interceptor guidance model:
         When a target is assigned, the interceptor steers toward the predicted
         moving-target lead-intercept point rather than toward the target's
@@ -216,21 +262,18 @@ class SimEnv:
         self.p = params
         self.t = 0.0
         self.interceptor_pos = np.array(params.home, dtype=float)
-
         self.threats: List[Threat] = []
         self.next_threat_id = 0
 
         self.spawned = 0
         self.intercepted = 0
         self.escaped = 0
-
         self.rng_arrival = np.random.default_rng(params.seed + 101)
         self.rng_spawn = np.random.default_rng(params.seed + 202)
         self.rng_speed = np.random.default_rng(params.seed + 303)
         self.rng_angle = np.random.default_rng(params.seed + 404)
         self.rng_cluster = np.random.default_rng(params.seed + 505)
         self.rng_burst = np.random.default_rng(params.seed + 606)
-
         self.cluster_centers: List[Tuple[float, float]] = []
         if params.manual_threats is None and params.spatial_structure == "clustered":
             self.cluster_centers = self._sample_cluster_centers()
@@ -240,21 +283,18 @@ class SimEnv:
             self.manual_queue = sorted(params.manual_threats, key=lambda x: x["t"])
         else:
             self._spawn_initial_targets()
-
     def active_threats(self) -> List[Threat]:
         return [th for th in self.threats if not th.intercepted and not th.escaped]
 
     def _sample_cluster_centers(self) -> List[Tuple[float, float]]:
         centers: List[Tuple[float, float]] = []
         n_clusters = max(1, int(self.p.n_clusters))
-
         for _ in range(n_clusters):
             cx = max(1.0, self.rng_cluster.normal(self.p.x_spawn_mean, self.p.x_spawn_std))
             cy = self.rng_cluster.normal(0.0, max(1e-9, self.p.y_spawn_sigma))
             centers.append((float(cx), float(cy)))
 
         return centers
-
     def _sample_stochastic_position(self) -> np.ndarray:
         if self.p.spatial_structure == "clustered" and self.cluster_centers:
             cx, cy = self.cluster_centers[int(self.rng_spawn.integers(0, len(self.cluster_centers)))]
@@ -263,18 +303,15 @@ class SimEnv:
         else:
             x0 = max(1.0, self.rng_spawn.normal(self.p.x_spawn_mean, self.p.x_spawn_std))
             y0 = self.rng_spawn.normal(0.0, self.p.y_spawn_sigma)
-
         return np.array([x0, y0], dtype=float)
 
     def _sample_stochastic_velocity(self) -> np.ndarray:
         """Sample a stochastic target velocity directed toward x=0.
-
         Earlier versions sampled the speed from a normal distribution and then
         applied max(1e-6, speed). Rare negative draws therefore became nearly
         stationary targets with boundary_speed close to zero. Such targets are
         mathematically valid but create huge time-to-boundary values that are
         not meaningful for the finite-horizon experiments.
-
         The current sampler enforces two lower bounds:
         - total target speed is at least min_threat_speed;
         - motion toward the protected boundary is at least min_boundary_speed.
@@ -285,7 +322,6 @@ class SimEnv:
 
         min_speed = max(float(self.p.min_threat_speed), EPS)
         min_boundary_speed = max(float(self.p.min_boundary_speed), EPS)
-
         # Try rejection sampling first so that typical velocities preserve the
         # sampled speed and heading distribution.
         for _ in range(50):
@@ -295,10 +331,8 @@ class SimEnv:
 
             vx = -speed * np.cos(theta)
             vy = speed * np.sin(theta)
-
             if -vx >= min_boundary_speed:
                 return np.array([vx, vy], dtype=float)
-
         # Extremely unlikely fallback for very large sampled headings.
         # Keep the lateral component but enforce minimum boundary progress.
         speed = max(float(self.rng_speed.normal(self.p.v_threat_mean, self.p.v_threat_std)), min_speed, min_boundary_speed)
@@ -307,7 +341,6 @@ class SimEnv:
         vy = speed * np.sin(theta)
 
         return np.array([vx, vy], dtype=float)
-
     def _add_stochastic_threat(self, t_birth: Optional[float] = None) -> None:
         th = Threat(
             id=self.next_threat_id,
@@ -319,7 +352,6 @@ class SimEnv:
         self.threats.append(th)
         self.next_threat_id += 1
         self.spawned += 1
-
     def _spawn_initial_targets(self) -> None:
         for _ in range(max(0, int(self.p.initial_targets))):
             self._add_stochastic_threat(t_birth=0.0)
@@ -330,7 +362,6 @@ class SimEnv:
 
         while self.manual_queue and self.manual_queue[0]["t"] <= self.t + eps:
             item = self.manual_queue.pop(0)
-
             th = Threat(
                 id=self.next_threat_id,
                 pos=np.array(item["pos"], dtype=float),
@@ -344,7 +375,6 @@ class SimEnv:
             arrivals += 1
 
         return arrivals
-
     def _stochastic_arrival_count(self) -> int:
         process = (self.p.arrival_process or "bernoulli").lower()
         mean_count = max(0.0, self.p.lambda_arrival * self.p.dt)
@@ -355,7 +385,6 @@ class SimEnv:
         if process == "bursty":
             base_count = int(self.rng_arrival.poisson(mean_count))
             burst_count = 0
-
             if self.rng_burst.random() < max(0.0, self.p.burst_probability) * self.p.dt:
                 low = max(1, int(self.p.burst_size_min))
                 high = max(low, int(self.p.burst_size_max))
@@ -365,7 +394,6 @@ class SimEnv:
 
         # Backward-compatible behavior: at most one arrival per time step.
         return int(self.rng_arrival.random() < mean_count)
-
     def _spawn_stochastic_if_due(self) -> int:
         arrivals = self._stochastic_arrival_count()
         for _ in range(arrivals):
@@ -381,7 +409,6 @@ class SimEnv:
                 return th
 
         return None
-
     def _interceptor_destination(self, target: Optional[Threat]) -> np.ndarray:
         if target is None:
             return np.array(self.p.home, dtype=float)
@@ -395,7 +422,6 @@ class SimEnv:
 
     def step(self, target_id: Optional[int]) -> Dict[str, int]:
         events = {"arrival": 0, "intercept": 0, "escape": 0}
-
         # 1. Arrivals at the current time.
         if self.p.manual_threats is not None:
             events["arrival"] += self._spawn_manual_threats_due()
@@ -403,9 +429,13 @@ class SimEnv:
             events["arrival"] += self._spawn_stochastic_if_due()
 
         # 2. Lead-pursuit interceptor guidance based on the current state.
+        # Save positions AFTER births, BEFORE movement; RNG calls are unchanged.
+        boundary_fix_start_I = self.interceptor_pos.copy()
+        boundary_fix_start_T = {
+            th.id: th.pos.copy() for th in self.active_threats()
+        }
         target = self._select_target_object(target_id)
         destination = self._interceptor_destination(target)
-
         new_interceptor_pos = move_toward(
             self.interceptor_pos,
             destination,
@@ -419,18 +449,31 @@ class SimEnv:
             th.pos = th.pos + th.vel * self.p.dt
 
         self.interceptor_pos = new_interceptor_pos
-
         # 4. Interceptions after the simultaneous movement update.
         victims = []
         for th in self.active_threats():
             if float(np.linalg.norm(th.pos - self.interceptor_pos)) <= self.p.kill_radius:
+                if th.pos[0] <= 0.0 and not _boundary_fix_valid_capture(
+                    boundary_fix_start_I,
+                    destination,
+                    boundary_fix_start_T[th.id],
+                    th.vel,
+                    self.p.v_interceptor,
+                    self.p.kill_radius,
+                    self.p.dt,
+                ):
+                    # Leave the target active for the existing escape loop below.
+                    # Terminal time and subsequent decision timing stay unchanged.
+                    self.rejected_late_intercepts = (
+                        getattr(self, "rejected_late_intercepts", 0) + 1
+                    )
+                    continue
                 victims.append(th)
 
         for th in victims:
             th.intercepted = True
             self.intercepted += 1
             events["intercept"] += 1
-
         # 5. Boundary penetration for remaining active threats.
         for th in self.active_threats():
             if th.pos[0] <= 0.0:
